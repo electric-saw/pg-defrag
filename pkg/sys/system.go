@@ -2,9 +2,19 @@ package sys
 
 import "syscall"
 
-const IOPRIO_WHO_PROCESS = 1
-const IOPRIO_PRIO_MASK = ((uint32(1) << IOPRIO_CLASS_SHIFT) - 1)
-const IOPRIO_CLASS_SHIFT = uint32(13)
+const (
+	IOPRIO_WHO_PROCESS = 1
+	IOPRIO_WHO_PGRP    = 2
+	IOPRIO_WHO_USER    = 3
+
+	IOPRIO_CLASS_NONE = 0
+	IOPRIO_CLASS_RT   = 1
+	IOPRIO_CLASS_BE   = 2
+	IOPRIO_CLASS_IDLE = 3
+
+	IOPRIO_PRIO_MASK   = ((uint32(1) << IOPRIO_CLASS_SHIFT) - 1)
+	IOPRIO_CLASS_SHIFT = uint32(13)
+)
 
 func SetPriorityPID(pid int, priority int) error {
 	return syscall.Setpriority(syscall.PRIO_PROCESS, pid, priority)

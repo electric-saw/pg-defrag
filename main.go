@@ -1,23 +1,28 @@
 package main
 
 import (
-	"os"
-	"strconv"
+	"context"
+	"fmt"
 
-	"github.com/electric-saw/pg-defrag/pkg/sys"
+	"github.com/electric-saw/pg-defrag/pkg/defrag"
+	"github.com/sirupsen/logrus"
 )
 
 func main() {
-	pid, e := strconv.Atoi(os.Args[1])
-	if e != nil {
-		panic(e)
+
+	p, err := defrag.NewProcessor("localhost:5432", logrus.New())
+	if err != nil {
+		logrus.Fatal(err)
 	}
 
-	if e := sys.SetPriorityPID(pid, 15); e != nil {
-		panic(e.Error())
+	p.Tables = append(p.Tables, "route", "leg")
+
+	defer p.Close()
+
+	if cleaned, err := p.Run(context.Background()); err != nil {
+		logrus.Panic(err)
+	} else {
+		fmt.Printf("cleaned: %v", cleaned)
 	}
 
-	if e := sys.SetIOPriorityPID(pid, 3); e != nil {
-		panic(e.Error())
-	}
 }

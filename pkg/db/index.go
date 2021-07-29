@@ -15,31 +15,31 @@ import (
 )
 
 type IndexDefinition struct {
-	IndexName    string
-	Tablespace   string
-	IndexDef     string
-	IndexMethod  string
-	ConName      string
-	ConTypeDef   string
-	Allowed      bool
-	IsFunctional bool
-	IsDeferrable bool
-	IsDeferred   bool
-	IdxSize      int64
+	IndexName    string  `db:"indexname"`
+	Tablespace   string  `db:"tablespace"`
+	IndexDef     string  `db:"indexdef"`
+	IndexMethod  string  `db:"indmethod"`
+	ConName      *string `db:"conname"`
+	ConTypeDef   *string `db:"contypedef"`
+	Allowed      bool    `db:"allowed"`
+	IsFunctional bool    `db:"is_functional"`
+	IsDeferrable *bool   `db:"is_deferrable"`
+	IsDeferred   *bool   `db:"is_deferred"`
+	IdxSize      int64   `db:"idxsize"`
 }
 
 type IndexStats struct {
-	Size      int64
-	PageCount int64
+	Size      int64 `db:"size"`
+	PageCount int64 `db:"page_count"`
 }
 
 type IndexBloatStats struct {
-	FreePerctent int
-	FreeSpace    int64
+	FreePerctent float64 `db:"free_percent"`
+	FreeSpace    int64   `db:"free_space"`
 }
 
 func (pg *PgConnection) ReindexTable(ctx context.Context, schema, table string, force bool) (bool, int, error) {
-	var isReindexed bool = false
+	var isReindexed bool = true
 	var lockAttemp = 0
 
 	if indexDataList, err := pg.GetIndexList(ctx, schema, table); err != nil {
@@ -66,10 +66,10 @@ func (pg *PgConnection) ReindexTable(ctx context.Context, schema, table string, 
 					pg.log.Infof("skipping reindex: %s.%s, not btree, reindexing is up to you.", schema, index.IndexName)
 					pg.log.Warnf("reindex queries: %s.%s, initial size %d pages (%s)", schema, index.IndexName, initialIndexStats.PageCount, humanize.Bytes(uint64(initialIndexStats.Size)))
 					if index.Allowed {
-						pg.log.Warnf("%s; --%s", pg.getReindexQuery(index), pg.Conn.Config().Database)
-						pg.log.Warnf("%s; --%s", pg.getAlterIndexQuery(schema, table, index), pg.Conn.Config().Database)
+						pg.log.Warnf("%s; --%s", pg.getReindexQuery(&index), pg.Conn.Config().Database)
+						pg.log.Warnf("%s; --%s", pg.getAlterIndexQuery(schema, table, &index), pg.Conn.Config().Database)
 					} else {
-						pg.log.Warnf("%s; --%s", pg.getStraightReindexQuery(schema, index), pg.Conn.Config().Database)
+						pg.log.Warnf("%s; --%s", pg.getStraightReindexQuery(schema, &index), pg.Conn.Config().Database)
 					}
 					continue
 				}
@@ -79,8 +79,8 @@ func (pg *PgConnection) ReindexTable(ctx context.Context, schema, table string, 
 					continue
 				}
 
-				if indexBloatStats.FreePerctent > params.MINIMAL_COMPACT_PERCENT {
-					pg.log.Infof("skipping reindex: %s.%s, %d%% free space is below required %d%%", schema, index.IndexName, indexBloatStats.FreePerctent, params.MINIMAL_COMPACT_PERCENT)
+				if indexBloatStats.FreePerctent < params.MINIMAL_COMPACT_PERCENT {
+					pg.log.Infof("skipping reindex: %s.%s, %f%% free space is below required %d%%", schema, index.IndexName, indexBloatStats.FreePerctent, params.MINIMAL_COMPACT_PERCENT)
 					continue
 				}
 
@@ -88,21 +88,21 @@ func (pg *PgConnection) ReindexTable(ctx context.Context, schema, table string, 
 
 			if !index.Allowed {
 				pg.log.Infof("skip reindex: %s.%s, can not reindex without heavy locks because of its dependencies, reindexing is up to you.", schema, index.IndexName)
-				pg.log.Warnf("reindex queries: %s.%s, initial size %d pages (%s), will be reduced by %d%% (%s)",
+				pg.log.Warnf("reindex queries: %s.%s, initial size %d pages (%s), will be reduced by %f%% (%s)",
 					schema,
 					index.IndexName,
 					initialIndexStats.PageCount,
 					humanize.Bytes(uint64(initialIndexStats.Size)),
 					indexBloatStats.FreePerctent,
 					humanize.Bytes(uint64(indexBloatStats.FreeSpace)))
-				pg.log.Warnf("%s; --%s", pg.getReindexQuery(index), pg.Conn.Config().Database)
-				pg.log.Warnf("%s; --%s", pg.getAlterIndexQuery(schema, table, index), pg.Conn.Config().Database)
+				pg.log.Warnf("%s; --%s", pg.getReindexQuery(&index), pg.Conn.Config().Database)
+				pg.log.Warnf("%s; --%s", pg.getAlterIndexQuery(schema, table, &index), pg.Conn.Config().Database)
 				continue
 			}
 
 			startedAt := time.Now()
 
-			err = pg.Reindex(ctx, index)
+			err = pg.Reindex(ctx, &index)
 			if err != nil {
 				pg.log.Warnf("skipped reindex: %s.%s, %s", schema, index.IndexName, err)
 				continue
@@ -118,7 +118,7 @@ func (pg *PgConnection) ReindexTable(ctx context.Context, schema, table string, 
 			}
 
 			for lockAttemp < 3 {
-				if err := pg.AlterIndex(ctx, schema, table, index); err != nil {
+				if err := pg.AlterIndex(ctx, schema, table, &index); err != nil {
 					if strings.Contains(err.Error(), "statement timeout") {
 						lockAttemp++
 						pg.log.Warnf("failed on alter index: %s.%s, %s", schema, index.IndexName, err)
@@ -151,11 +151,10 @@ func (pg *PgConnection) ReindexTable(ctx context.Context, schema, table string, 
 					humanize.Bytes(uint64(freeSpace)),
 					time.Since(startedAt),
 					lockAttemp)
-				isReindexed = true
 			} else {
 				if err := pg.dropTempIndex(ctx, schema); err != nil {
-					pg.log.Errorf("unable to drop temporary index: %s.pgcompact_index_%d, %s", schema, pg.GetPID(), err)
-					return isReindexed, lockAttemp, err
+					pg.log.Errorf("unable to drop temporary index: %s.pg_defrag_index_%d, %s", schema, pg.GetPID(), err)
+					return false, lockAttemp, err
 				}
 
 				pg.log.Warnf("reindex: %s.%s, lock has not been acquired, initial size %d pages (%s)",
@@ -164,10 +163,11 @@ func (pg *PgConnection) ReindexTable(ctx context.Context, schema, table string, 
 					initialIndexStats.PageCount,
 					humanize.Bytes(uint64(initialIndexStats.Size)))
 
+				isReindexed = false
 			}
 
 			if pg.log.IsLevelEnabled(logrus.DebugLevel) {
-				pg.log.Debugf("reindex queries: %s.%s, initial size %d pages (%s), will be reduced by %d%% (%s), duration %s",
+				pg.log.Debugf("reindex queries: %s.%s, initial size %d pages (%s), will be reduced by %f%% (%s), duration %s",
 					schema,
 					index.IndexName,
 					initialIndexStats.PageCount,
@@ -176,8 +176,8 @@ func (pg *PgConnection) ReindexTable(ctx context.Context, schema, table string, 
 					humanize.Bytes(uint64(indexBloatStats.FreeSpace)),
 					time.Since(startedAt))
 
-				pg.log.Warnf("%s; --%s", pg.getReindexQuery(index), pg.Conn.Config().Database)
-				pg.log.Warnf("%s; --%s", pg.getAlterIndexQuery(schema, table, index), pg.Conn.Config().Database)
+				pg.log.Warnf("%s; --%s", pg.getReindexQuery(&index), pg.Conn.Config().Database)
+				pg.log.Warnf("%s; --%s", pg.getAlterIndexQuery(schema, table, &index), pg.Conn.Config().Database)
 			}
 
 		}
@@ -192,7 +192,7 @@ func (pg *PgConnection) Reindex(ctx context.Context, index *IndexDefinition) err
 
 func (pg *PgConnection) AlterIndex(ctx context.Context, schema, table string, index *IndexDefinition) error {
 	for _, sql := range strings.Split(pg.getAlterIndexQuery(schema, table, index), ";") {
-		_, err := pg.Conn.Exec(ctx, sql)
+		_, err := pg.Conn.Exec(ctx, fmt.Sprintf("%s;", strings.TrimSpace(sql)))
 		if err != nil {
 			return err
 		}
@@ -200,7 +200,7 @@ func (pg *PgConnection) AlterIndex(ctx context.Context, schema, table string, in
 	return nil
 }
 
-func (pg *PgConnection) GetIndexList(ctx context.Context, schema, table string) ([]*IndexDefinition, error) {
+func (pg *PgConnection) GetIndexList(ctx context.Context, schema, table string) ([]IndexDefinition, error) {
 	qry := `
 	SELECT
     indexname, tablespace, indexdef,
@@ -224,12 +224,12 @@ func (pg *PgConnection) GetIndexList(ctx context.Context, schema, table string) 
         WHERE
             (objid = indexoid AND classid = pgclassid) OR
             (refobjid = indexoid AND refclassid = pgclassid)
-    )::integer AS allowed,
+    )::integer = 1 AS allowed,
     (
         SELECT string_to_array(indkey::text, ' ')::int2[] operator(pg_catalog.@>) array[0::int2]
         FROM pg_catalog.pg_index
         WHERE indexrelid = indexoid
-    )::integer as is_functional,
+    )::integer = 1 as is_functional,
     condeferrable as is_deferrable,
     condeferred as is_deferred,
     pg_catalog.pg_relation_size(indexoid) as idxsize
@@ -258,7 +258,7 @@ LEFT JOIN pg_catalog.pg_constraint ON
 ORDER BY idxsize;
 	`
 
-	var result []*IndexDefinition
+	result := []IndexDefinition{}
 
 	err := pgxscan.Select(ctx, pg.Conn, &result, qry, schema, table)
 	return result, err
@@ -274,7 +274,7 @@ func (pg *PgConnection) GetIndexSizeStatistics(ctx context.Context, schema, inde
     ) AS sq
     `
 	var result IndexStats
-	err := pgxscan.Select(ctx, pg.Conn, &result, qry, schema, index)
+	err := pgxscan.Get(ctx, pg.Conn, &result, qry, schema, index)
 	return result, err
 
 }
@@ -284,7 +284,7 @@ func (pg *PgConnection) getReindexQuery(index *IndexDefinition) string {
 	var re = regexp.MustCompile(`(?m)INDEX (\S+)`)
 	var re2 = regexp.MustCompile(`(?m)( WHERE .*|$)`)
 
-	qry = re.ReplaceAllString(qry, fmt.Sprintf("INDEX CONCURRENTLY pgcompact_index_%d", pg.GetPID()))
+	qry = re.ReplaceAllString(qry, fmt.Sprintf("INDEX CONCURRENTLY pg_defrag_index_%d", pg.GetPID()))
 	if index.Tablespace != "" {
 		qry = re2.ReplaceAllString(qry, fmt.Sprintf(" TABLESPACE %s $1", index.Tablespace))
 	}
@@ -292,21 +292,20 @@ func (pg *PgConnection) getReindexQuery(index *IndexDefinition) string {
 }
 
 func (pg *PgConnection) dropTempIndex(ctx context.Context, schema string) error {
-	_, err := pg.Conn.Exec(ctx, fmt.Sprintf("DROP INDEX CONCURRENTLY pgcompact_index_%d", pg.GetPID()))
+	_, err := pg.Conn.Exec(ctx, fmt.Sprintf("DROP INDEX CONCURRENTLY pg_defrag_index_%d", pg.GetPID()))
 	return err
 }
 
 func (pg *PgConnection) getAlterIndexQuery(schema, table string, index *IndexDefinition) string {
+	if index.ConName != nil {
+		constraintName := QuoteIdentifier(*index.ConName)
+		constraintOptions := fmt.Sprintf("%s using index pg_defrag_index_%d", *index.ConTypeDef, pg.GetPID())
 
-	if len(index.ConName) > 0 {
-		constraintName := QuoteIdentifier(index.ConName)
-		constraintOptions := fmt.Sprintf("%s using index pgcompact_index_%d", index.ConTypeDef, pg.GetPID())
-
-		if index.IsDeferrable {
+		if index.IsDeferrable != nil && *index.IsDeferrable {
 			constraintOptions = fmt.Sprintf(" %s deferrable", constraintOptions)
 		}
 
-		if index.IsDeferred {
+		if index.IsDeferred != nil && *index.IsDeferred {
 			constraintOptions = fmt.Sprintf(" %s initially deferred", constraintOptions)
 		}
 
@@ -320,10 +319,10 @@ func (pg *PgConnection) getAlterIndexQuery(schema, table string, index *IndexDef
 		return fmt.Sprintf(`
         begin; set local statement_timeout = 0;
         alter index %s.%s rename to %s;
-        alter index %s.pgcompact_index_%d rename to %s;
+        alter index %s.pg_defrag_index_%d rename to %s;
         end;
         drop index concurrently %s.%s;
-        `, schema, index.IndexName, randIndex, schema, pg.GetPID(), randIndex, schema, randIndex)
+        `, schema, index.IndexName, randIndex, schema, pg.GetPID(), index.IndexName, schema, randIndex)
 
 	}
 

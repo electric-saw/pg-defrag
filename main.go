@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"os"
 
 	"github.com/electric-saw/pg-defrag/pkg/defrag"
 	"github.com/sirupsen/logrus"
@@ -10,12 +11,17 @@ import (
 
 func main() {
 
-	p, err := defrag.NewProcessor("localhost:5432", logrus.New())
+	p, err := defrag.NewProcessor(os.Getenv("PG_CONNECTION_STRING"),
+		logrus.New())
 	if err != nil {
 		logrus.Fatal(err)
 	}
 
-	p.Tables = append(p.Tables, "route", "leg")
+	p.Tables = append(p.Tables, "route_leg", "route")
+	p.InitialReindex = false // test: ok
+	p.InitialVacuum = false  // test: ok
+	p.RoutineVacuum = true
+	p.Force = false
 
 	defer p.Close()
 

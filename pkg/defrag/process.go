@@ -67,10 +67,14 @@ func (p *Process) Run(ctx context.Context) (bool, error) {
 	}
 
 	for _, table := range p.Tables {
-		if cleaned, err := p.process(ctx, "ifood_fleet_delivery_manager", table); err != nil {
-			return false, err
-		} else if cleaned {
-			return cleaned, nil
+		if schema, err := p.pg.GetSchemaOfTable(ctx, table); err != nil {
+			return false, fmt.Errorf("can't get schema of table %s: %v", table, err)
+		} else {
+			if cleaned, err := p.process(ctx, schema, table); err != nil {
+				return false, err
+			} else if cleaned {
+				return cleaned, nil
+			}
 		}
 	}
 
@@ -97,14 +101,14 @@ func (p *Process) process(ctx context.Context, schema, table string) (bool, erro
 	isSkipped := false
 
 	logrus.Infof("try adquiring lock")
-	if lock, err := p.pg.TryAdvisoryLock(ctx, schema, table); err != nil {
+	if locked, err := p.pg.TryAdvisoryLock(ctx, schema, table); err != nil {
 		return false, fmt.Errorf("can't adquire lock: %v", err)
-	} else if !lock {
+	} else if locked {
 		logrus.Infof("another instance is working with table %s.%s", schema, table)
-		return false, nil
+		isLocked = locked
 	} else {
-		isLocked = true
-		logrus.Infof("table %s.%s successful locked", schema, table)
+		isLocked = locked
+		logrus.Infof("table %s.%s is unlocked", schema, table)
 	}
 
 	if stats, err := p.pg.GetPgSizeStats(ctx, schema, table); err != nil {
@@ -246,7 +250,7 @@ func (p *Process) process(ctx context.Context, schema, table string) (bool, erro
 				return false, fmt.Errorf("can't begin transaction: %v", err)
 			}
 
-			startTime := time.Now()
+			// startTime := time.Now()
 			lastToPage = toPage
 
 			toPage, err = p.pg.CleanPages(ctx, schema, table, columnName, lastToPage, pagesPerRound, maxTuplesPerPage)
@@ -277,7 +281,7 @@ func (p *Process) process(ctx context.Context, schema, table string) (bool, erro
 				}
 			}
 
-			sleepTime := /* TODO: makeit configurable*/ 2 * (time.Since(startTime))
+			sleepTime := 2 * time.Second /* TODO: makeit configurable (time.Since(startTime)) */
 			if sleepTime > 0 {
 				time.Sleep(sleepTime)
 			}
@@ -287,12 +291,12 @@ func (p *Process) process(ctx context.Context, schema, table string) (bool, erro
 			if time.Since(progressReportTime) >= params.PROGRESS_REPORT_PERIOD {
 				var pct int64 = 1
 				if bloatStats.EffectivePageCount > 0 {
-					pct = (100 * (initialSizeStats.PageCount - toPage - 1) / (tableInfo.Stats.PageCount - bloatStats.EffectivePageCount))
+					pct = (100 * (initialSizeStats.PageCount - toPage - 1) / (tableInfo.InitialStats.PageCount - bloatStats.EffectivePageCount))
 				}
 
-				left := (tableInfo.Stats.PageCount - toPage - 1)
+				cleaned := (tableInfo.Stats.PageCount - toPage - 1)
 
-				p.log.Warnf("progress: %d%%, %d pages cleaned, %d pages left", pct, tableInfo.Stats.PageCount, left)
+				p.log.Warnf("progress: %d%%, %d pages cleaned, %d pages left", pct, cleaned, tableInfo.InitialStats.PageCount-cleaned)
 
 				progressReportTime = time.Now()
 			}
@@ -409,11 +413,10 @@ func (p *Process) process(ctx context.Context, schema, table string) (bool, erro
 		(isSkipped || tableInfo.Stats.PageCount < params.MINIMAL_COMPACT_PAGES || bloatStats.FreePercent < params.MINIMAL_COMPACT_PERCENT))
 
 	if !isLocked && (p.log.IsLevelEnabled(logrus.DebugLevel) || (!p.NoReindex || attempt == 3) || (!isReindexed && isSkipped && attempt < 3)) {
-		if ok, tryNo, err := p.pg.ReindexTable(ctx, schema, table, p.Force); err != nil {
+		if ok, _, err := p.pg.ReindexTable(ctx, schema, table, p.Force); err != nil {
 			return false, fmt.Errorf("can't reindex table %s.%s: %v", schema, table, err)
 		} else {
 			isReindexed = ok || isReindexed
-			attempt = tryNo
 		}
 
 		if !p.NoReindex {

@@ -15,9 +15,9 @@ type PgSizeStats struct {
 }
 
 type PgBloatStats struct {
-	EffectivePageCount int64
-	FreePercent        float64
-	FreeSpace          int64
+	EffectivePageCount int64   `db:"effective_page_count"`
+	FreePercent        float64 `db:"free_percent"`
+	FreeSpace          int64   `db:"free_space"`
 }
 
 func (pg *PgConnection) GetPgSizeStats(ctx context.Context, schema, table string) (*PgSizeStats, error) {
@@ -45,31 +45,30 @@ func (pg *PgConnection) GetBloatStats(ctx context.Context, schema, table string)
 	if err != nil {
 		return nil, fmt.Errorf("Failed to get pg_stat_tuple schema: %v", err)
 	}
-
 	qry := fmt.Sprintf(`
-	"SELECT
-    ceil((size - free_space - dead_tuple_len) * 100 / fillfactor / bs) AS effective_page_count,
+	select
+    ceil((size - free_space - dead_tuple_len) * 100 / fillfactor / bs) as effective_page_count,
             greatest(round(
                 (100 * (1 - (100 - free_percent - dead_tuple_percent) / fillfactor))::numeric, 2
-            ),0) AS free_percent,
-            greatest(ceil(size - (size - free_space - dead_tuple_len) * 100 / fillfactor), 0) AS free_space
-    FROM (
-    SELECT
-        current_setting('block_size')::integer AS bs,
-        pg_catalog.pg_relation_size(pg_catalog.pg_class.oid) AS size,
+            ),0) as free_percent,
+            greatest(ceil(size - (size - free_space - dead_tuple_len) * 100 / fillfactor), 0) as free_space
+    from (
+    select
+        current_setting('block_size')::integer as bs,
+        pg_catalog.pg_relation_size(pg_catalog.pg_class.oid) as size,
         coalesce(
             (
-                SELECT (
+                select (
                     regexp_matches(
-                        reloptions::text, E'.*fillfactor=(\\\\d+).*'))[1]),
-            '100')::real AS fillfactor,
+                        reloptions::text, e'.*fillfactor=(\\\\d+).*'))[1]),
+            '100')::real as fillfactor,
         pgst.*
-    FROM pg_catalog.pg_class
-    CROSS JOIN
+    from pg_catalog.pg_class
+    cross join
         %s.pgstattuple(
-            (quote_ident($1) || '.' || quote_ident($2))) AS pgst
-    WHERE pg_catalog.pg_class.oid = (quote_ident($1) || '.' || quote_ident($2))::regclass
-    ) AS sq`, pgStatTupleSchema)
+            (quote_ident($1) || '.' || quote_ident($2))) as pgst
+    where pg_catalog.pg_class.oid = (quote_ident($1) || '.' || quote_ident($2))::regclass
+    ) as sq limit 1;`, pgStatTupleSchema)
 
 	var stats PgBloatStats
 	err = pgxscan.Get(ctx, pg.Conn, &stats, qry, schema, table)

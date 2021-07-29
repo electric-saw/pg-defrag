@@ -9,7 +9,7 @@ import (
 
 func (pg *PgConnection) CreateCleanPageFunction(ctx context.Context) (string, error) {
 	qry := `
-	CREATE OR REPLACE FUNCTION public.pgcompact_clean_pages_%d(
+	CREATE OR REPLACE FUNCTION public.pg_defrag_clean_pages_%d(
 		i_table_ident text,
 		i_column_ident text,
 		i_to_page integer,
@@ -29,7 +29,7 @@ func (pg *PgConnection) CreateCleanPageFunction(ctx context.Context) (string, er
 		_update_query text :=
 			'UPDATE ONLY ' || i_table_ident ||
 			' SET ' || i_column_ident || ' = ' || i_column_ident ||
-			' WHERE ctid = ANY(\$1) RETURNING ctid';
+			' WHERE ctid = ANY($1) RETURNING ctid';
 	BEGIN
 		-- Check page argument values
 		IF NOT (
@@ -86,16 +86,16 @@ func (pg *PgConnection) CreateCleanPageFunction(ctx context.Context) (string, er
 	END $$;
 `
 	_, err := pg.Conn.Exec(ctx, fmt.Sprintf(qry, pg.GetPID()))
-	return fmt.Sprintf("pgcompact_clean_pages_%d", pg.GetPID()), err
+	return fmt.Sprintf("pg_defrag_clean_pages_%d", pg.GetPID()), err
 }
 
 func (pg *PgConnection) DropCleanPageFunction(ctx context.Context) error {
-	_, err := pg.Conn.Exec(ctx, fmt.Sprintf("drop function pgcompact_clean_pages_%d", pg.GetPID()))
+	_, err := pg.Conn.Exec(ctx, fmt.Sprintf("drop function pg_defrag_clean_pages_%d", pg.GetPID()))
 	return err
 }
 
 func (pg *PgConnection) CleanPages(ctx context.Context, schema, table string, column string, toPage, pagesPerRound, maxTupplesPerPage int64) (int64, error) {
-	qry := fmt.Sprintf("SELECT pgcompact_clean_pages_%d($1, $2, $3, $4, $5)", pg.GetPID())
+	qry := fmt.Sprintf("SELECT pg_defrag_clean_pages_%d($1, $2, $3, $4, $5);", pg.GetPID())
 
 	var newToPage int64
 	err := pg.Conn.QueryRow(ctx, qry,
@@ -143,13 +143,11 @@ func (pg *PgConnection) GetMaxTuplesPerPage(ctx context.Context, schema, table s
 	SELECT ceil(current_setting('block_size')::real / sum(attlen))
 	FROM pg_catalog.pg_attribute
 	WHERE
-		attrelid = '%s.%s'::regclass AND
-		attnum < 0;
-		");
+		attrelid = '%s.%s'::regclass AND attnum < 0;
 `, QuoteIdentifier(schema), QuoteIdentifier(table))
 
 	var maxTupplesPerPage int64
-	err := pg.Conn.QueryRow(ctx, qry, schema, table).Scan(&maxTupplesPerPage)
+	err := pg.Conn.QueryRow(ctx, qry).Scan(&maxTupplesPerPage)
 	return maxTupplesPerPage, err
 }
 

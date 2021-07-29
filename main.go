@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/electric-saw/pg-defrag/pkg/defrag"
 	"github.com/sirupsen/logrus"
@@ -17,11 +18,11 @@ func main() {
 		logrus.Fatal(err)
 	}
 
-	p.Tables = append(p.Tables, "route_leg", "route")
+	p.Tables = strings.Split(os.Getenv("PG_TABLES"), ",")
 	p.InitialReindex = false // test: ok
 	p.InitialVacuum = false  // test: ok
-	p.RoutineVacuum = true
-	p.Force = false
+	p.RoutineVacuum = false
+	p.Force = true
 
 	defer p.Close()
 

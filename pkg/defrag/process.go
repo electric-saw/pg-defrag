@@ -72,7 +72,7 @@ func (p *Process) Run(ctx context.Context) (bool, error) {
 		} else {
 			if cleaned, err := p.process(ctx, schema, table); err != nil {
 				return false, err
-			} else if cleaned {
+			} else if !cleaned {
 				return cleaned, nil
 			}
 		}
@@ -86,10 +86,10 @@ func setLowPiority(pg *db.PgConnection) error {
 	if pid == 0 || pg.Conn.Config().User == "postgres" {
 		if err := sys.SetIOPriorityPID(int(pid), sys.IOPRIO_CLASS_IDLE); err != nil {
 			logrus.Error(err)
-			logrus.Warnf("can´t apply ionce on pid %d, run 'ionce -c 3 -p %d'", pid, pid)
+			logrus.Warnf("can´t apply ionice on pid %d, run 'ionice -c 3 -p %d'", pid, pid)
 		}
 	} else {
-		logrus.Warnf("can´t apply ionce on pid %d, run o database host 'ionce -c 3 -p %d'", pid, pid)
+		logrus.Warnf("can´t apply ionice on pid %d, run o database host 'ionice -c 3 -p %d'", pid, pid)
 	}
 	return nil
 }
@@ -100,9 +100,9 @@ func (p *Process) process(ctx context.Context, schema, table string) (bool, erro
 	tableInfo := &TableInfo{}
 	isSkipped := false
 
-	logrus.Infof("try adquiring lock")
+	logrus.Infof("try advisory lock")
 	if locked, err := p.pg.TryAdvisoryLock(ctx, schema, table); err != nil {
-		return false, fmt.Errorf("can't adquire lock: %v", err)
+		return false, fmt.Errorf("can't try advisory lock: %v", err)
 	} else if locked {
 		logrus.Infof("another instance is working with table %s.%s", schema, table)
 		isLocked = locked
@@ -176,14 +176,14 @@ func (p *Process) process(ctx context.Context, schema, table string) (bool, erro
 	if !isLocked && !isSkipped {
 		canBeCompacted := bloatStats.FreePercent > 0 && tableInfo.Stats.PageCount > bloatStats.EffectivePageCount
 		if canBeCompacted {
-			p.log.Warnf("statistics: %d pages (%d pages including toasts and indexes), it is expected that ~%0.3f%% (%d pages) can be compacted with the estimated space saving being %s.",
+			p.log.Infof("statistics: %d pages (%d pages including toasts and indexes), it is expected that ~%0.3f%% (%d pages) can be compacted with the estimated space saving being %s.",
 				tableInfo.Stats.PageCount,
 				tableInfo.Stats.TotalPageCount,
 				bloatStats.FreePercent,
 				(tableInfo.Stats.PageCount - bloatStats.EffectivePageCount),
 				humanize.Bytes(uint64(bloatStats.FreeSpace)))
 		} else {
-			p.log.Warnf("statistics: %d pages (%d pages including toasts and indexes)",
+			p.log.Infof("statistics: %d pages (%d pages including toasts and indexes)",
 				tableInfo.Stats.PageCount,
 				tableInfo.Stats.TotalPageCount)
 		}
@@ -272,31 +272,31 @@ func (p *Process) process(ctx context.Context, schema, table string) (bool, erro
 					return false, fmt.Errorf("can't clean pages: %v", err)
 				}
 			} else {
+				if err := tx.Commit(ctx); err != nil {
+					return false, fmt.Errorf("can't commit transaction: %v", err)
+				}
 				if toPage == -1 {
 					toPage = lastToPage
 					break
 				}
-				if err := tx.Commit(ctx); err != nil {
-					return false, fmt.Errorf("can't commit transaction: %v", err)
-				}
 			}
 
-			sleepTime := 2 * time.Second /* TODO: makeit configurable (time.Since(startTime)) */
-			if sleepTime > 0 {
-				time.Sleep(sleepTime)
-			}
+			// sleepTime := 2 * time.Second /* TODO: makeit configurable (time.Since(startTime)) */
+			// if sleepTime > 0 {
+			// 	time.Sleep(sleepTime)
+			// }
 
 			// TODO: after round statements?
 
 			if time.Since(progressReportTime) >= params.PROGRESS_REPORT_PERIOD {
 				var pct int64 = 1
 				if bloatStats.EffectivePageCount > 0 {
-					pct = (100 * (initialSizeStats.PageCount - toPage - 1) / (tableInfo.InitialStats.PageCount - bloatStats.EffectivePageCount))
+					pct = (100 * (initialSizeStats.PageCount - toPage - 1) / (tableInfo.Stats.PageCount - bloatStats.EffectivePageCount))
 				}
 
 				cleaned := (tableInfo.Stats.PageCount - toPage - 1)
 
-				p.log.Warnf("progress: %d%%, %d pages cleaned, %d pages left", pct, cleaned, tableInfo.InitialStats.PageCount-cleaned)
+				p.log.Infof("progress: %d%%, %d pages cleaned, %d pages left", pct, cleaned, (tableInfo.InitialStats.PageCount-bloatStats.EffectivePageCount)-cleaned)
 
 				progressReportTime = time.Now()
 			}
@@ -406,7 +406,6 @@ func (p *Process) process(ctx context.Context, schema, table string) (bool, erro
 		bloatStats = newBloatStats
 
 		p.log.Infof("bloat statistics with pgstattuple: duration %s", time.Since(getStatTime))
-		pagesBeforeVacuum = p.pg.GetPagesBeforeVacuum(tableInfo.Stats.PageCount, expectedPageCount)
 	}
 
 	willBeSkipped := (!isLocked &&

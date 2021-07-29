@@ -86,15 +86,16 @@ func (pg *PgConnection) ReindexTable(ctx context.Context, schema, table string, 
 
 			}
 
+			pg.log.Warnf("reindex queries: %s.%s, initial size %d pages (%s), will be reduced by %f%% (%s)",
+				schema,
+				index.IndexName,
+				initialIndexStats.PageCount,
+				humanize.Bytes(uint64(initialIndexStats.Size)),
+				indexBloatStats.FreePerctent,
+				humanize.Bytes(uint64(indexBloatStats.FreeSpace)))
+
 			if !index.Allowed {
 				pg.log.Infof("skip reindex: %s.%s, can not reindex without heavy locks because of its dependencies, reindexing is up to you.", schema, index.IndexName)
-				pg.log.Warnf("reindex queries: %s.%s, initial size %d pages (%s), will be reduced by %f%% (%s)",
-					schema,
-					index.IndexName,
-					initialIndexStats.PageCount,
-					humanize.Bytes(uint64(initialIndexStats.Size)),
-					indexBloatStats.FreePerctent,
-					humanize.Bytes(uint64(indexBloatStats.FreeSpace)))
 				pg.log.Warnf("%s; --%s", pg.getReindexQuery(&index), pg.Conn.Config().Database)
 				pg.log.Warnf("%s; --%s", pg.getAlterIndexQuery(schema, table, &index), pg.Conn.Config().Database)
 				continue

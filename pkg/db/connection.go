@@ -9,30 +9,39 @@ import (
 
 type PgConnection struct {
 	Conn *pgx.Conn
-	log  *logrus.Logger
+	log  logrus.FieldLogger
 }
 
-func NewConnection(ctx context.Context, connStr string, log *logrus.Logger) (*PgConnection, error) {
-	conn, err := pgx.Connect(ctx, connStr)
-	if err != nil {
+func NewConnection(ctx context.Context, connStr string, log logrus.FieldLogger) (*PgConnection, error) {
+	if conn, err := pgx.Connect(ctx, connStr); err != nil {
+		return nil, err
+	} else {
+		return NewConnectionWithConn(ctx, conn, log)
+	}
+}
+
+func NewConnectionWithConn(ctx context.Context, conn *pgx.Conn, log logrus.FieldLogger) (*PgConnection, error) {
+	if _, err := conn.Exec(ctx, `set application_name to "pg-defrag";`); err != nil {
+		return nil, err
+	}
+	if _, err := conn.Exec(ctx, `set lc_messages TO 'C';`); err != nil {
+		return nil, err
+	}
+	if _, err := conn.Exec(ctx, `set client_min_messages to warning;`); err != nil {
 		return nil, err
 	}
 
-	_, _ = conn.Exec(ctx, `set application_name to "pg-defrag";`)
-	_, _ = conn.Exec(ctx, `set lc_messages TO 'C';`)
-	_, _ = conn.Exec(ctx, `set client_min_messages to warning;`)
-
 	return &PgConnection{Conn: conn, log: log}, nil
+
 }
 
 func (pg *PgConnection) Close(ctx context.Context) {
 	if err := pg.Conn.Close(ctx); err != nil {
-		logrus.Errorf("Error closing connection: %v", err)
+		pg.log.Errorf("Error closing connection: %v", err)
 	}
 }
 
 func (pg *PgConnection) GetPID() uint32 {
-	//  select pg_backend_pid();
 	return pg.Conn.PgConn().PID()
 }
 

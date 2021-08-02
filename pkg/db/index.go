@@ -11,7 +11,6 @@ import (
 	"github.com/dustin/go-humanize"
 	"github.com/electric-saw/pg-defrag/pkg/params"
 	"github.com/georgysavva/scany/pgxscan"
-	"github.com/sirupsen/logrus"
 )
 
 type IndexDefinition struct {
@@ -63,7 +62,7 @@ func (pg *PgConnection) ReindexTable(ctx context.Context, schema, table string, 
 
 			if !force {
 				if index.IndexMethod != "btree" {
-					pg.log.Infof("skipping reindex: %s.%s, not btree, reindexing is up to you.", schema, index.IndexName)
+					pg.log.Warnf("skipping reindex: %s.%s, not btree, reindexing is up to you.", schema, index.IndexName)
 					pg.log.Warnf("reindex queries: %s.%s, initial size %d pages (%s)", schema, index.IndexName, initialIndexStats.PageCount, humanize.Bytes(uint64(initialIndexStats.Size)))
 					if index.Allowed {
 						pg.log.Warnf("%s; --%s", pg.getReindexQuery(&index), pg.Conn.Config().Database)
@@ -167,19 +166,17 @@ func (pg *PgConnection) ReindexTable(ctx context.Context, schema, table string, 
 				isReindexed = false
 			}
 
-			if pg.log.IsLevelEnabled(logrus.DebugLevel) {
-				pg.log.Debugf("reindex queries: %s.%s, initial size %d pages (%s), will be reduced by %f%% (%s), duration %s",
-					schema,
-					index.IndexName,
-					initialIndexStats.PageCount,
-					humanize.Bytes(uint64(initialIndexStats.Size)),
-					indexBloatStats.FreePerctent,
-					humanize.Bytes(uint64(indexBloatStats.FreeSpace)),
-					time.Since(startedAt))
+			pg.log.Debugf("reindex queries: %s.%s, initial size %d pages (%s), will be reduced by %f%% (%s), duration %s",
+				schema,
+				index.IndexName,
+				initialIndexStats.PageCount,
+				humanize.Bytes(uint64(initialIndexStats.Size)),
+				indexBloatStats.FreePerctent,
+				humanize.Bytes(uint64(indexBloatStats.FreeSpace)),
+				time.Since(startedAt))
 
-				pg.log.Warnf("%s; --%s", pg.getReindexQuery(&index), pg.Conn.Config().Database)
-				pg.log.Warnf("%s; --%s", pg.getAlterIndexQuery(schema, table, &index), pg.Conn.Config().Database)
-			}
+			pg.log.Debugf("%s; --%s", pg.getReindexQuery(&index), pg.Conn.Config().Database)
+			pg.log.Debugf("%s; --%s", pg.getAlterIndexQuery(schema, table, &index), pg.Conn.Config().Database)
 
 		}
 	}

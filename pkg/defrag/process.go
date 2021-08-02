@@ -15,6 +15,11 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
+type Logger interface {
+	logrus.FieldLogger
+	IsLevelEnabled(logrus.Level) bool
+}
+
 type Process struct {
 	InitialVacuum  bool
 	InitialReindex bool
@@ -22,7 +27,7 @@ type Process struct {
 	Force          bool
 	RoutineVacuum  bool
 	Tables         []string
-	log            *logrus.Logger
+	log            Logger
 	pg             *db.PgConnection
 }
 
@@ -31,7 +36,7 @@ type TableInfo struct {
 	Stats        *db.PgSizeStats
 }
 
-func NewProcessor(connStr string, log *logrus.Logger) (*Process, error) {
+func NewProcessor(connStr string, log Logger) (*Process, error) {
 	conn, err := db.NewConnection(context.Background(), connStr, log)
 	if err != nil {
 		return nil, fmt.Errorf("can't create connection: %v", err)
@@ -47,21 +52,21 @@ func NewProcessor(connStr string, log *logrus.Logger) (*Process, error) {
 }
 
 func (p *Process) Run(ctx context.Context) (bool, error) {
-	if err := setLowPiority(p.pg); err != nil {
+	if err := p.setLowPiority(p.pg); err != nil {
 		return false, err
 	}
 
 	if err := p.pg.SetSessionReplicaRole(ctx); err != nil {
-		logrus.Errorf("can't set session replica role: %v", err)
+		p.log.Errorf("can't set session replica role: %v", err)
 	}
 
 	if fName, err := p.pg.CreateCleanPageFunction(ctx); err != nil {
-		logrus.Errorf("can't create clean page function: %v", err)
+		p.log.Errorf("can't create clean page function: %v", err)
 	} else {
-		logrus.Infof("clean page function created: %s", fName)
+		p.log.Infof("clean page function created: %s", fName)
 		defer func() {
 			if err := p.pg.DropCleanPageFunction(ctx); err != nil {
-				logrus.Errorf("can't drop clean page function: %v", err)
+				p.log.Errorf("can't drop clean page function: %v", err)
 			}
 		}()
 	}
@@ -81,34 +86,34 @@ func (p *Process) Run(ctx context.Context) (bool, error) {
 	return true, nil
 }
 
-func setLowPiority(pg *db.PgConnection) error {
+func (p *Process) setLowPiority(pg *db.PgConnection) error {
 	pid := pg.GetPID()
 	if pid == 0 || pg.Conn.Config().User == "postgres" {
 		if err := sys.SetIOPriorityPID(int(pid), sys.IOPRIO_CLASS_IDLE); err != nil {
-			logrus.Error(err)
-			logrus.Warnf("can´t apply ionice on pid %d, run 'ionice -c 3 -p %d'", pid, pid)
+			p.log.Error(err)
+			p.log.Warnf("can´t apply ionice on pid %d, run 'ionice -c 3 -p %d'", pid, pid)
 		}
 	} else {
-		logrus.Warnf("can´t apply ionice on pid %d, run o database host 'ionice -c 3 -p %d'", pid, pid)
+		p.log.Warnf("can´t apply ionice on pid %d, run o database host 'ionice -c 3 -p %d'", pid, pid)
 	}
 	return nil
 }
 
 func (p *Process) process(ctx context.Context, schema, table string) (bool, error) {
-	logrus.Infof("defragmenting table %s.%s", schema, table)
+	p.log.Infof("defragmenting table %s.%s", schema, table)
 	isLocked := false
 	tableInfo := &TableInfo{}
 	isSkipped := false
 
-	logrus.Infof("try advisory lock")
+	p.log.Infof("try advisory lock")
 	if locked, err := p.pg.TryAdvisoryLock(ctx, schema, table); err != nil {
 		return false, fmt.Errorf("can't try advisory lock: %v", err)
 	} else if locked {
-		logrus.Infof("another instance is working with table %s.%s", schema, table)
+		p.log.Infof("another instance is working with table %s.%s", schema, table)
 		isLocked = locked
 	} else {
 		isLocked = locked
-		logrus.Infof("table %s.%s is unlocked", schema, table)
+		p.log.Infof("table %s.%s is unlocked", schema, table)
 	}
 
 	if stats, err := p.pg.GetPgSizeStats(ctx, schema, table); err != nil {

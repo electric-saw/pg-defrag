@@ -7,10 +7,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/dustin/go-humanize"
 	"github.com/electric-saw/pg-defrag/pkg/db"
 	"github.com/electric-saw/pg-defrag/pkg/params"
 	"github.com/electric-saw/pg-defrag/pkg/sys"
+	"github.com/electric-saw/pg-defrag/pkg/utils"
 	"github.com/jackc/pgx/v4"
 	"github.com/sirupsen/logrus"
 )
@@ -62,10 +62,12 @@ func (p *Process) Run(ctx context.Context) (bool, error) {
 
 	if fName, err := p.pg.CreateCleanPageFunction(ctx); err != nil {
 		p.log.Errorf("can't create clean page function: %v", err)
+
+		return false, err
 	} else {
 		p.log.Infof("clean page function created: %s", fName)
 		defer func() {
-			if err := p.pg.DropCleanPageFunction(ctx); err != nil {
+			if err := p.pg.DropCleanPageFunction(context.Background()); err != nil {
 				p.log.Errorf("can't drop clean page function: %v", err)
 			}
 		}()
@@ -186,7 +188,7 @@ func (p *Process) process(ctx context.Context, schema, table string) (bool, erro
 				tableInfo.Stats.TotalPageCount,
 				bloatStats.FreePercent,
 				(tableInfo.Stats.PageCount - bloatStats.EffectivePageCount),
-				humanize.Bytes(uint64(bloatStats.FreeSpace)))
+				utils.Humanize(bloatStats.FreeSpace))
 		} else {
 			p.log.Infof("statistics: %d pages (%d pages including toasts and indexes)",
 				tableInfo.Stats.PageCount,
@@ -444,18 +446,18 @@ func (p *Process) process(ctx context.Context, schema, table string) (bool, erro
 			p.log.Warnf("processing results: %d pages (%d pages including toasts and indexes), size has been reduced by %s (%s including toasts and indexes) in total. This attempt has been initially expected to compact ~%f%% more space (%d pages, %s)",
 				tableInfo.Stats.PageCount,
 				tableInfo.Stats.TotalPageCount,
-				humanize.Bytes(uint64(tableInfo.InitialStats.Size)-uint64(tableInfo.Stats.Size)),
-				humanize.Bytes(uint64(tableInfo.InitialStats.TotalSize)-uint64(tableInfo.Stats.TotalSize)),
+				utils.Humanize(tableInfo.InitialStats.Size-tableInfo.Stats.Size),
+				utils.Humanize(tableInfo.InitialStats.TotalSize-tableInfo.Stats.TotalSize),
 				bloatStats.FreePercent,
 				tableInfo.Stats.PageCount-bloatStats.EffectivePageCount,
-				humanize.Bytes(uint64(bloatStats.FreeSpace)),
+				utils.Humanize(bloatStats.FreeSpace),
 			)
 		} else {
 			p.log.Warnf("processing results: %d pages left (%d pages including toasts and indexes), size reduced by %s (%s including toasts and indexes) in total.",
 				tableInfo.Stats.PageCount,
 				tableInfo.Stats.TotalPageCount,
-				humanize.Bytes(uint64(tableInfo.InitialStats.Size)-uint64(tableInfo.Stats.Size)),
-				humanize.Bytes(uint64(tableInfo.InitialStats.TotalSize)-uint64(tableInfo.Stats.TotalSize)),
+				utils.Humanize(tableInfo.InitialStats.Size-tableInfo.Stats.Size),
+				utils.Humanize(tableInfo.InitialStats.TotalSize-tableInfo.Stats.TotalSize),
 			)
 		}
 	}

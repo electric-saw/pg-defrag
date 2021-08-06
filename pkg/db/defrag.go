@@ -155,7 +155,7 @@ func (pg *PgConnection) GetPagesPerRound(pageCount, toPage int64) int64 {
 	var realPagesPerRound int64
 	var pagesPerRound int64
 
-	if pageCount/params.PAGES_PER_ROUND_DIVISOR > 1 {
+	if pageCount > params.PAGES_PER_ROUND_DIVISOR {
 		realPagesPerRound = pageCount
 	} else {
 		realPagesPerRound = params.PAGES_PER_ROUND_DIVISOR

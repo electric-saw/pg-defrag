@@ -8,8 +8,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/dustin/go-humanize"
 	"github.com/electric-saw/pg-defrag/pkg/params"
+	"github.com/electric-saw/pg-defrag/pkg/utils"
 	"github.com/georgysavva/scany/pgxscan"
 )
 
@@ -63,7 +63,7 @@ func (pg *PgConnection) ReindexTable(ctx context.Context, schema, table string, 
 			if !force {
 				if index.IndexMethod != "btree" {
 					pg.log.Warnf("skipping reindex: %s.%s, not btree, reindexing is up to you.", schema, index.IndexName)
-					pg.log.Warnf("reindex queries: %s.%s, initial size %d pages (%s)", schema, index.IndexName, initialIndexStats.PageCount, humanize.Bytes(uint64(initialIndexStats.Size)))
+					pg.log.Warnf("reindex queries: %s.%s, initial size %d pages (%s)", schema, index.IndexName, initialIndexStats.PageCount, utils.Humanize(initialIndexStats.Size))
 					if index.Allowed {
 						pg.log.Warnf("%s; --%s", pg.getReindexQuery(&index), pg.Conn.Config().Database)
 						pg.log.Warnf("%s; --%s", pg.getAlterIndexQuery(schema, table, &index), pg.Conn.Config().Database)
@@ -89,9 +89,9 @@ func (pg *PgConnection) ReindexTable(ctx context.Context, schema, table string, 
 				schema,
 				index.IndexName,
 				initialIndexStats.PageCount,
-				humanize.Bytes(uint64(initialIndexStats.Size)),
+				utils.Humanize(initialIndexStats.Size),
 				indexBloatStats.FreePerctent,
-				humanize.Bytes(uint64(indexBloatStats.FreeSpace)))
+				utils.Humanize(indexBloatStats.FreeSpace))
 
 			if !index.Allowed {
 				pg.log.Infof("skip reindex: %s.%s, can not reindex without heavy locks because of its dependencies, reindexing is up to you.", schema, index.IndexName)
@@ -146,9 +146,9 @@ func (pg *PgConnection) ReindexTable(ctx context.Context, schema, table string, 
 					schema,
 					index.IndexName,
 					initialIndexStats.PageCount,
-					humanize.Bytes(uint64(initialIndexStats.Size)),
+					utils.Humanize(initialIndexStats.Size),
 					freePct,
-					humanize.Bytes(uint64(freeSpace)),
+					utils.Humanize(freeSpace),
 					time.Since(startedAt),
 					lockAttemp)
 			} else {
@@ -161,7 +161,7 @@ func (pg *PgConnection) ReindexTable(ctx context.Context, schema, table string, 
 					schema,
 					index.IndexName,
 					initialIndexStats.PageCount,
-					humanize.Bytes(uint64(initialIndexStats.Size)))
+					utils.Humanize(initialIndexStats.Size))
 
 				isReindexed = false
 			}
@@ -170,9 +170,9 @@ func (pg *PgConnection) ReindexTable(ctx context.Context, schema, table string, 
 				schema,
 				index.IndexName,
 				initialIndexStats.PageCount,
-				humanize.Bytes(uint64(initialIndexStats.Size)),
+				utils.Humanize(initialIndexStats.Size),
 				indexBloatStats.FreePerctent,
-				humanize.Bytes(uint64(indexBloatStats.FreeSpace)),
+				utils.Humanize(indexBloatStats.FreeSpace),
 				time.Since(startedAt))
 
 			pg.log.Debugf("%s; --%s", pg.getReindexQuery(&index), pg.Conn.Config().Database)

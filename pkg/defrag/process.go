@@ -462,7 +462,7 @@ func (p *Process) process(ctx context.Context, schema, table string) (bool, erro
 		}
 	}
 
-	return (isLocked || isSkipped || willBeSkipped) && (isReindexed || !p.NoReindex), nil
+	return (!isLocked || isSkipped || willBeSkipped) && (isReindexed || !p.NoReindex), nil
 }
 
 func (p *Process) Close() {

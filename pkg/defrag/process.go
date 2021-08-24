@@ -48,7 +48,15 @@ func NewProcessor(connStr string, log Logger) (*Process, error) {
 	}
 
 	return process, nil
+}
 
+func (p *Process) RunReindexTable(ctx context.Context, table string) (bool, int, error) {
+	schema, err := p.pg.GetSchemaOfTable(ctx, table)
+	if err != nil {
+		return false, 0, fmt.Errorf("can't get schema %w", err)
+	}
+
+	return p.pg.ReindexTable(ctx, schema, table, false)
 }
 
 func (p *Process) Run(ctx context.Context) (bool, error) {

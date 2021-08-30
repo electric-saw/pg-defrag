@@ -426,7 +426,7 @@ func (p *Process) process(ctx context.Context, schema, table string) (bool, erro
 	willBeSkipped := (!isLocked &&
 		(isSkipped || tableInfo.Stats.PageCount < params.MINIMAL_COMPACT_PAGES || bloatStats.FreePercent < params.MINIMAL_COMPACT_PERCENT))
 
-	if !isLocked && (p.log.IsLevelEnabled(logrus.DebugLevel) || (!p.NoReindex || attempt == 3) || (!isReindexed && isSkipped && attempt < 3)) {
+	if !isLocked && (!p.NoReindex && (!isSkipped || attempt == 3) || (!isReindexed && isSkipped && attempt < 3)) {
 		if ok, _, err := p.pg.ReindexTable(ctx, schema, table, p.Force); err != nil {
 			return false, fmt.Errorf("can't reindex table %s.%s: %v", schema, table, err)
 		} else {

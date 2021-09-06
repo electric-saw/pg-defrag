@@ -45,139 +45,144 @@ func (pg *PgConnection) ReindexTable(ctx context.Context, schema, table string, 
 		return false, 0, fmt.Errorf("failed on get index data: %w", err)
 	} else {
 		for _, index := range indexDataList {
-			initialIndexStats, err := pg.GetIndexSizeStatistics(ctx, schema, index.IndexName)
-			if err != nil {
-				return false, 0, fmt.Errorf("failed on get index size statistics: %w", err)
-			}
-
-			if initialIndexStats.PageCount <= 1 {
-				pg.log.Infof("skipping reindex: %s.%s, empty or 1 page only", schema, index.IndexName)
-				continue
-			}
-
-			indexBloatStats, err := pg.getIndexBloatStats(ctx, schema, index.IndexName)
-			if err != nil {
-				return false, 0, fmt.Errorf("failed on get index bloat stats: %w", err)
-			}
-
-			if !force {
-				if index.IndexMethod != "btree" {
-					pg.log.Warnf("skipping reindex: %s.%s, not btree, reindexing is up to you.", schema, index.IndexName)
-					pg.log.Warnf("reindex queries: %s.%s, initial size %d pages (%s)", schema, index.IndexName, initialIndexStats.PageCount, utils.Humanize(initialIndexStats.Size))
-					if index.Allowed {
-						pg.log.Warnf("%s; --%s", pg.getReindexQuery(&index), pg.Conn.Config().Database)
-						pg.log.Warnf("%s; --%s", pg.getAlterIndexQuery(schema, table, &index), pg.Conn.Config().Database)
-					} else {
-						pg.log.Warnf("%s; --%s", pg.getStraightReindexQuery(schema, &index), pg.Conn.Config().Database)
-					}
-					continue
-				}
-
-				if initialIndexStats.PageCount < params.MINIMAL_COMPACT_PAGES {
-					pg.log.Infof("skipping reindex: %s.%s, too few pages (%d and the minimum is %d)", schema, index.IndexName, initialIndexStats.PageCount, params.MINIMAL_COMPACT_PAGES)
-					continue
-				}
-
-				if indexBloatStats.FreePerctent < params.MINIMAL_COMPACT_PERCENT {
-					pg.log.Infof("skipping reindex: %s.%s, %f%% free space is below required %d%%", schema, index.IndexName, indexBloatStats.FreePerctent, params.MINIMAL_COMPACT_PERCENT)
-					continue
-				}
-
-			}
-
-			pg.log.Warnf("reindex queries: %s.%s, initial size %d pages (%s), will be reduced by %f%% (%s)",
-				schema,
-				index.IndexName,
-				initialIndexStats.PageCount,
-				utils.Humanize(initialIndexStats.Size),
-				indexBloatStats.FreePerctent,
-				utils.Humanize(indexBloatStats.FreeSpace))
-
-			if !index.Allowed {
-				pg.log.Infof("skip reindex: %s.%s, can not reindex without heavy locks because of its dependencies, reindexing is up to you.", schema, index.IndexName)
-				pg.log.Warnf("%s; --%s", pg.getReindexQuery(&index), pg.Conn.Config().Database)
-				pg.log.Warnf("%s; --%s", pg.getAlterIndexQuery(schema, table, &index), pg.Conn.Config().Database)
-				continue
-			}
-
-			startedAt := time.Now()
-
-			err = pg.Reindex(ctx, &index)
-			if err != nil {
-				pg.log.Warnf("skipped reindex: %s.%s, %s", schema, index.IndexName, err)
-				continue
-			}
-
-			if index.IsFunctional {
-				analyzeStartedAt := time.Now()
-				if err := pg.Analyze(ctx, schema, table); err != nil {
-					pg.log.Warnf("failed on analyze: %s.%s, %s", schema, index.IndexName, err.Error())
-				} else {
-					pg.log.Infof("auto analyze functional index, duration %s", time.Since(analyzeStartedAt))
-				}
-			}
-
-			for lockAttemp < 3 {
-				if err := pg.AlterIndex(ctx, schema, table, &index); err != nil {
-					if strings.Contains(err.Error(), "statement timeout") {
-						lockAttemp++
-						pg.log.Warnf("failed on alter index: %s.%s, %s", schema, index.IndexName, err)
-						time.Sleep(10 * time.Second)
-						pg.log.Infof("retry alter index: %s.%s, %d/3", schema, index.IndexName, lockAttemp)
-						continue
-					} else {
-						pg.log.Errorf("failed on alter index: %s.%s, %s", schema, index.IndexName, err)
-						return false, lockAttemp, err
-					}
-				} else {
-					break
-				}
-			}
-
-			if lockAttemp < 3 {
-				newStats, err := pg.GetIndexSizeStatistics(ctx, schema, index.IndexName)
+			select {
+			case <-ctx.Done():
+				return isReindexed, lockAttemp, nil
+			default:
+				initialIndexStats, err := pg.GetIndexSizeStatistics(context.Background(), schema, index.IndexName)
 				if err != nil {
-					return isReindexed, lockAttemp, fmt.Errorf("failed on get index size statistics: %w", err)
+					return false, 0, fmt.Errorf("failed on get index size statistics: %w", err)
 				}
 
-				freePct := 100 * (1 - float64(newStats.Size)/float64(initialIndexStats.Size))
-				freeSpace := (initialIndexStats.Size - newStats.Size)
-				pg.log.Warnf("reindex: %s.%s, initial size %d (%s), has been reduced by %f%% (%s), duration %s, attemps %d",
+				if initialIndexStats.PageCount <= 1 {
+					pg.log.Infof("skipping reindex: %s.%s, empty or 1 page only", schema, index.IndexName)
+					continue
+				}
+
+				indexBloatStats, err := pg.getIndexBloatStats(context.Background(), schema, index.IndexName)
+				if err != nil {
+					return false, 0, fmt.Errorf("failed on get index bloat stats: %w", err)
+				}
+
+				if !force {
+					if index.IndexMethod != "btree" {
+						pg.log.Warnf("skipping reindex: %s.%s, not btree, reindexing is up to you.", schema, index.IndexName)
+						pg.log.Warnf("reindex queries: %s.%s, initial size %d pages (%s)", schema, index.IndexName, initialIndexStats.PageCount, utils.Humanize(initialIndexStats.Size))
+						if index.Allowed {
+							pg.log.Warnf("%s; --%s", pg.getReindexQuery(&index), pg.Conn.Config().Database)
+							pg.log.Warnf("%s; --%s", pg.getAlterIndexQuery(schema, table, &index), pg.Conn.Config().Database)
+						} else {
+							pg.log.Warnf("%s; --%s", pg.getStraightReindexQuery(schema, &index), pg.Conn.Config().Database)
+						}
+						continue
+					}
+
+					if initialIndexStats.PageCount < params.MINIMAL_COMPACT_PAGES {
+						pg.log.Infof("skipping reindex: %s.%s, too few pages (%d and the minimum is %d)", schema, index.IndexName, initialIndexStats.PageCount, params.MINIMAL_COMPACT_PAGES)
+						continue
+					}
+
+					if indexBloatStats.FreePerctent < params.MINIMAL_COMPACT_PERCENT {
+						pg.log.Infof("skipping reindex: %s.%s, %f%% free space is below required %d%%", schema, index.IndexName, indexBloatStats.FreePerctent, params.MINIMAL_COMPACT_PERCENT)
+						continue
+					}
+
+				}
+
+				pg.log.Warnf("reindex queries: %s.%s, initial size %d pages (%s), will be reduced by %f%% (%s)",
 					schema,
 					index.IndexName,
 					initialIndexStats.PageCount,
 					utils.Humanize(initialIndexStats.Size),
-					freePct,
-					utils.Humanize(freeSpace),
-					time.Since(startedAt),
-					lockAttemp)
-			} else {
-				if err := pg.dropTempIndex(ctx, schema); err != nil {
-					pg.log.Errorf("unable to drop temporary index: %s.pg_defrag_index_%d, %s", schema, pg.GetPID(), err)
-					return false, lockAttemp, err
+					indexBloatStats.FreePerctent,
+					utils.Humanize(indexBloatStats.FreeSpace))
+
+				if !index.Allowed {
+					pg.log.Infof("skip reindex: %s.%s, can not reindex without heavy locks because of its dependencies, reindexing is up to you.", schema, index.IndexName)
+					pg.log.Warnf("%s; --%s", pg.getReindexQuery(&index), pg.Conn.Config().Database)
+					pg.log.Warnf("%s; --%s", pg.getAlterIndexQuery(schema, table, &index), pg.Conn.Config().Database)
+					continue
 				}
 
-				pg.log.Warnf("reindex: %s.%s, lock has not been acquired, initial size %d pages (%s)",
+				startedAt := time.Now()
+
+				err = pg.Reindex(context.Background(), &index)
+				if err != nil {
+					pg.log.Warnf("skipped reindex: %s.%s, %s", schema, index.IndexName, err)
+					continue
+				}
+
+				if index.IsFunctional {
+					analyzeStartedAt := time.Now()
+					if err := pg.Analyze(context.Background(), schema, table); err != nil {
+						pg.log.Warnf("failed on analyze: %s.%s, %s", schema, index.IndexName, err.Error())
+					} else {
+						pg.log.Infof("auto analyze functional index, duration %s", time.Since(analyzeStartedAt))
+					}
+				}
+
+				for lockAttemp < 3 {
+					if err := pg.AlterIndex(context.Background(), schema, table, &index); err != nil {
+						if strings.Contains(err.Error(), "statement timeout") {
+							lockAttemp++
+							pg.log.Warnf("failed on alter index: %s.%s, %s", schema, index.IndexName, err)
+							time.Sleep(10 * time.Second)
+							pg.log.Infof("retry alter index: %s.%s, %d/3", schema, index.IndexName, lockAttemp)
+							continue
+						} else {
+							pg.log.Errorf("failed on alter index: %s.%s, %s", schema, index.IndexName, err)
+							return false, lockAttemp, err
+						}
+					} else {
+						break
+					}
+				}
+
+				if lockAttemp < 3 {
+					newStats, err := pg.GetIndexSizeStatistics(context.Background(), schema, index.IndexName)
+					if err != nil {
+						return isReindexed, lockAttemp, fmt.Errorf("failed on get index size statistics: %w", err)
+					}
+
+					freePct := 100 * (1 - float64(newStats.Size)/float64(initialIndexStats.Size))
+					freeSpace := (initialIndexStats.Size - newStats.Size)
+					pg.log.Warnf("reindex: %s.%s, initial size %d (%s), has been reduced by %f%% (%s), duration %s, attemps %d",
+						schema,
+						index.IndexName,
+						initialIndexStats.PageCount,
+						utils.Humanize(initialIndexStats.Size),
+						freePct,
+						utils.Humanize(freeSpace),
+						time.Since(startedAt),
+						lockAttemp)
+				} else {
+					if err := pg.dropTempIndex(context.Background(), schema); err != nil {
+						pg.log.Errorf("unable to drop temporary index: %s.pg_defrag_index_%d, %s", schema, pg.GetPID(), err)
+						return false, lockAttemp, err
+					}
+
+					pg.log.Warnf("reindex: %s.%s, lock has not been acquired, initial size %d pages (%s)",
+						schema,
+						index.IndexName,
+						initialIndexStats.PageCount,
+						utils.Humanize(initialIndexStats.Size))
+
+					isReindexed = false
+				}
+
+				pg.log.Debugf("reindex queries: %s.%s, initial size %d pages (%s), will be reduced by %f%% (%s), duration %s",
 					schema,
 					index.IndexName,
 					initialIndexStats.PageCount,
-					utils.Humanize(initialIndexStats.Size))
+					utils.Humanize(initialIndexStats.Size),
+					indexBloatStats.FreePerctent,
+					utils.Humanize(indexBloatStats.FreeSpace),
+					time.Since(startedAt))
 
-				isReindexed = false
+				pg.log.Debugf("%s; --%s", pg.getReindexQuery(&index), pg.Conn.Config().Database)
+				pg.log.Debugf("%s; --%s", pg.getAlterIndexQuery(schema, table, &index), pg.Conn.Config().Database)
+
 			}
-
-			pg.log.Debugf("reindex queries: %s.%s, initial size %d pages (%s), will be reduced by %f%% (%s), duration %s",
-				schema,
-				index.IndexName,
-				initialIndexStats.PageCount,
-				utils.Humanize(initialIndexStats.Size),
-				indexBloatStats.FreePerctent,
-				utils.Humanize(indexBloatStats.FreeSpace),
-				time.Since(startedAt))
-
-			pg.log.Debugf("%s; --%s", pg.getReindexQuery(&index), pg.Conn.Config().Database)
-			pg.log.Debugf("%s; --%s", pg.getAlterIndexQuery(schema, table, &index), pg.Conn.Config().Database)
-
 		}
 	}
 	return isReindexed, lockAttemp, nil

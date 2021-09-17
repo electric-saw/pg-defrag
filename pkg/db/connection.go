@@ -30,6 +30,9 @@ func NewConnectionWithConn(ctx context.Context, conn *pgx.Conn, log logrus.Field
 	if _, err := conn.Exec(ctx, `set client_min_messages to warning;`); err != nil {
 		return nil, err
 	}
+	if _, err := conn.Exec(ctx, `set statement_timeout to 0;`); err != nil {
+		return nil, err
+	}
 
 	return &PgConnection{Conn: conn, log: log}, nil
 

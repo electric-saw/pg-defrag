@@ -109,6 +109,13 @@ func (pg *PgConnection) ReindexTable(ctx context.Context, schema, table string, 
 				err = pg.Reindex(context.Background(), &index)
 				if err != nil {
 					pg.log.Warnf("skipped reindex: %s.%s, %s", schema, index.IndexName, err)
+
+					// Cleanup index
+
+					if exists, _ := pg.IndexExists(context.Background(), schema, pg.getTempIndexName()); exists {
+						pg.log.Infof("removing index: %s.%s", schema, pg.getTempIndexName())
+						_ = pg.dropTempIndex(context.Background(), schema)
+					}
 					continue
 				}
 
@@ -157,7 +164,7 @@ func (pg *PgConnection) ReindexTable(ctx context.Context, schema, table string, 
 						lockAttemp)
 				} else {
 					if err := pg.dropTempIndex(context.Background(), schema); err != nil {
-						pg.log.Errorf("unable to drop temporary index: %s.pg_defrag_index_%d, %s", schema, pg.GetPID(), err)
+						pg.log.Errorf("unable to drop temporary index: %s.%s, %s", schema, pg.getTempIndexName(), err)
 						return false, lockAttemp, err
 					}
 
@@ -186,6 +193,10 @@ func (pg *PgConnection) ReindexTable(ctx context.Context, schema, table string, 
 		}
 	}
 	return isReindexed, lockAttemp, nil
+}
+
+func (pg *PgConnection) getTempIndexName() string {
+	return fmt.Sprintf("pg_defrag_index_%d", pg.GetPID())
 }
 
 func (pg *PgConnection) Reindex(ctx context.Context, index *IndexDefinition) error {
@@ -287,22 +298,35 @@ func (pg *PgConnection) getReindexQuery(index *IndexDefinition) string {
 	var re = regexp.MustCompile(`(?m)INDEX (\S+)`)
 	var re2 = regexp.MustCompile(`(?m)( WHERE .*|$)`)
 
-	qry = re.ReplaceAllString(qry, fmt.Sprintf("INDEX CONCURRENTLY pg_defrag_index_%d", pg.GetPID()))
+	qry = re.ReplaceAllString(qry, fmt.Sprintf("INDEX CONCURRENTLY %s", pg.getTempIndexName()))
 	if index.Tablespace != "" {
 		qry = re2.ReplaceAllString(qry, fmt.Sprintf(" TABLESPACE %s $1", index.Tablespace))
 	}
 	return qry
 }
 
+func (pg *PgConnection) IndexExists(ctx context.Context, schema, index string) (bool, error) {
+	qry := `
+	SELECT EXISTS (
+		SELECT 1
+		FROM pg_catalog.pg_indexes
+		WHERE schemaname = quote_ident($1) AND indexname = quote_ident($2)
+	)
+	`
+	var result bool
+	err := pgxscan.Get(ctx, pg.Conn, &result, qry, schema, index)
+	return result, err
+}
+
 func (pg *PgConnection) dropTempIndex(ctx context.Context, schema string) error {
-	_, err := pg.Conn.Exec(ctx, fmt.Sprintf("DROP INDEX CONCURRENTLY pg_defrag_index_%d", pg.GetPID()))
+	_, err := pg.Conn.Exec(ctx, fmt.Sprintf("DROP INDEX CONCURRENTLY %s;", pg.getTempIndexName()))
 	return err
 }
 
 func (pg *PgConnection) getAlterIndexQuery(schema, table string, index *IndexDefinition) string {
 	if index.ConName != nil {
 		constraintName := QuoteIdentifier(*index.ConName)
-		constraintOptions := fmt.Sprintf("%s using index pg_defrag_index_%d", *index.ConTypeDef, pg.GetPID())
+		constraintOptions := fmt.Sprintf("%s using index %s", *index.ConTypeDef, pg.getTempIndexName())
 
 		if index.IsDeferrable != nil && *index.IsDeferrable {
 			constraintOptions = fmt.Sprintf(" %s deferrable", constraintOptions)
@@ -322,10 +346,10 @@ func (pg *PgConnection) getAlterIndexQuery(schema, table string, index *IndexDef
 		return fmt.Sprintf(`
         begin; set local statement_timeout = 0;
         alter index %s.%s rename to %s;
-        alter index %s.pg_defrag_index_%d rename to %s;
+        alter index %s.%s rename to %s;
         end;
         drop index concurrently %s.%s;
-        `, schema, index.IndexName, randIndex, schema, pg.GetPID(), index.IndexName, schema, randIndex)
+        `, schema, index.IndexName, randIndex, schema, pg.getTempIndexName(), index.IndexName, schema, randIndex)
 
 	}
 

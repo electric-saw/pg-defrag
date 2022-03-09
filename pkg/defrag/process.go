@@ -20,13 +20,18 @@ type Logger interface {
 	IsLevelEnabled(logrus.Level) bool
 }
 
+type JobInfo struct {
+	Schema string
+	Table  string
+}
+
 type Process struct {
 	InitialVacuum  bool
 	InitialReindex bool
 	NoReindex      bool
 	Force          bool
 	RoutineVacuum  bool
-	Tables         []string
+	Jobs           []JobInfo
 	log            Logger
 	pg             *db.PgConnection
 }
@@ -50,10 +55,13 @@ func NewProcessor(connStr string, log Logger) (*Process, error) {
 	return process, nil
 }
 
-func (p *Process) RunReindexTable(ctx context.Context, table string) (bool, int, error) {
-	schema, err := p.pg.GetSchemaOfTable(ctx, table)
-	if err != nil {
-		return false, 0, fmt.Errorf("can't get schema %w", err)
+func (p *Process) RunReindexTable(ctx context.Context, schema, table string) (bool, int, error) {
+	if len(schema) == 0 {
+		supposedSchema, err := p.pg.GetSchemaOfTable(ctx, table)
+		if err != nil {
+			return false, 0, fmt.Errorf("can't get schema %w", err)
+		}
+		schema = supposedSchema
 	}
 
 	return p.pg.ReindexTable(ctx, schema, table, false)
@@ -81,16 +89,21 @@ func (p *Process) Run(ctx context.Context) (bool, error) {
 		}()
 	}
 
-	for _, table := range p.Tables {
-		if schema, err := p.pg.GetSchemaOfTable(ctx, table); err != nil {
-			return false, fmt.Errorf("can't get schema of table %s: %v", table, err)
-		} else {
-			if cleaned, err := p.process(ctx, schema, table); err != nil {
-				return false, err
-			} else if !cleaned {
-				return cleaned, nil
+	for _, job := range p.Jobs {
+		if len(job.Schema) == 0 {
+			supposedSchema, err := p.pg.GetSchemaOfTable(ctx, job.Table)
+			if err != nil {
+				return false, fmt.Errorf("can't get schema %w", err)
 			}
+			job.Schema = supposedSchema
 		}
+
+		if cleaned, err := p.process(ctx, job.Schema, job.Table); err != nil {
+			return false, err
+		} else if !cleaned {
+			return cleaned, nil
+		}
+
 	}
 
 	return true, nil
@@ -445,9 +458,9 @@ func (p *Process) process(ctx context.Context, schema, table string) (bool, erro
 	if !isLocked && !(isSkipped && !isReindexed) {
 		completed := (willBeSkipped || !isSkipped) && isReindexed
 		if completed {
-			p.log.Info("processsing completed")
+			p.log.Info("processing completed")
 		} else {
-			p.log.Info("processsing incomplete")
+			p.log.Info("incomplete processing")
 		}
 
 		if bloatStats.FreePercent > 0 && tableInfo.Stats.PageCount > bloatStats.EffectivePageCount && !completed {

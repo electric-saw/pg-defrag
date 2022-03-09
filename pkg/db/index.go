@@ -83,7 +83,7 @@ func (pg *PgConnection) ReindexTable(ctx context.Context, schema, table string, 
 					}
 
 					if indexBloatStats.FreePerctent < params.MINIMAL_COMPACT_PERCENT {
-						pg.log.Infof("skipping reindex: %s.%s, %f%% free space is below required %d%%", schema, index.IndexName, indexBloatStats.FreePerctent, params.MINIMAL_COMPACT_PERCENT)
+						pg.log.Infof("skipping reindex: %s.%s, %f%s free space is below required %f%s", schema, index.IndexName, indexBloatStats.FreePerctent, "%", params.MINIMAL_COMPACT_PERCENT, "%")
 						continue
 					}
 

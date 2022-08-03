@@ -251,7 +251,7 @@ FROM (
     SELECT
         indexname, COALESCE(tablespace, (SELECT spcname AS tablespace FROM pg_catalog.pg_tablespace WHERE oid = (SELECT dattablespace
             FROM pg_catalog.pg_database
-            WHERE 
+            WHERE
                 datname = current_database() AND
                 spcname != current_setting('default_tablespace')))) AS tablespace, indexdef,
         (

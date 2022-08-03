@@ -1,6 +1,6 @@
-package sys
+//go:build !linux
 
-import "syscall"
+package sys
 
 const (
 	IOPRIO_WHO_PROCESS = 1
@@ -16,14 +16,7 @@ const (
 	IOPRIO_CLASS_SHIFT = uint32(13)
 )
 
-func SetPriorityPID(pid int, priority int) error {
-	return syscall.Setpriority(syscall.PRIO_PROCESS, pid, priority)
-}
 func SetIOPriorityPID(pid int, priority uint32) error {
-	priority = ((priority) << IOPRIO_CLASS_SHIFT) | (0 & IOPRIO_PRIO_MASK)
-	_, _, err := syscall.Syscall(syscall.SYS_IOPRIO_SET, uintptr(IOPRIO_WHO_PROCESS), uintptr(pid), uintptr(priority))
-	if err != 0 {
-		return err
-	}
+	// SetIOPriorityPID is not implemented.
 	return nil
 }

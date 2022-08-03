@@ -286,7 +286,10 @@ func (p *Process) process(ctx context.Context, schema, table string) (bool, erro
 				if err := tx.Rollback(ctx); err != nil {
 					return false, fmt.Errorf("can't rollback transaction: %v", err)
 				}
-
+				switch {
+				case strings.Contains(err.Error(), "deadlock detected"):
+					p.log.Errorf("deadlock detected, retrying")
+				}
 				if strings.Contains(err.Error(), "deadlock detected") {
 					p.log.Error("detected deadlock during cleaning")
 					continue

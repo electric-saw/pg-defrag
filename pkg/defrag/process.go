@@ -129,12 +129,14 @@ func (p *Process) process(ctx context.Context, schema, table string) (bool, erro
 	isSkipped := false
 
 	p.log.Infof("try advisory lock")
-	if locked, err := p.pg.TryAdvisoryLock(ctx, schema, table); err != nil {
+	locked, err := p.pg.TryAdvisoryLock(ctx, schema, table)
+	switch {
+	case err != nil:
 		return false, fmt.Errorf("can't try advisory lock: %v", err)
-	} else if locked {
+	case locked:
 		p.log.Infof("another instance is working with table %s.%s", schema, table)
 		isLocked = locked
-	} else {
+	default:
 		isLocked = locked
 		p.log.Infof("table %s.%s is unlocked", schema, table)
 	}
@@ -283,23 +285,19 @@ func (p *Process) process(ctx context.Context, schema, table string) (bool, erro
 
 			toPage, err = p.pg.CleanPages(ctx, schema, table, columnName, lastToPage, pagesPerRound, maxTuplesPerPage)
 			if err != nil {
-				if err := tx.Rollback(ctx); err != nil {
-					return false, fmt.Errorf("can't rollback transaction: %v", err)
+				if errRollback := tx.Rollback(ctx); err != nil {
+					return false, fmt.Errorf("can't rollback transaction: %v", errRollback)
 				}
 				switch {
 				case strings.Contains(err.Error(), "deadlock detected"):
-					p.log.Errorf("deadlock detected, retrying")
-				}
-				if strings.Contains(err.Error(), "deadlock detected") {
 					p.log.Error("detected deadlock during cleaning")
 					continue
-				} else if strings.Contains(err.Error(), "cannot extract system attribute") {
+				case strings.Contains(err.Error(), "cannot extract system attribute"):
 					p.log.Error("system attribute extraction error has occurred, processing stopped")
-					break
-				} else if errors.Is(err, pgx.ErrNoRows) {
+				case errors.Is(err, pgx.ErrNoRows):
 					p.log.Errorf("incorrect result of cleaning: column_name %s, to_page %d, pages_per_round %d, max_tupples_per_page %d",
 						columnName, lastToPage, pagesPerRound, maxTuplesPerPage)
-				} else {
+				default:
 					return false, fmt.Errorf("can't clean pages: %v", err)
 				}
 			} else {
@@ -312,12 +310,7 @@ func (p *Process) process(ctx context.Context, schema, table string) (bool, erro
 				}
 			}
 
-			// sleepTime := 2 * time.Second /* TODO: makeit configurable (time.Since(startTime)) */
-			// if sleepTime > 0 {
-			// 	time.Sleep(sleepTime)
-			// }
-
-			// TODO: after round statements?
+			time.Sleep(params.PER_ROUND_DELAY)
 
 			if time.Since(progressReportTime) >= params.PROGRESS_REPORT_PERIOD {
 				var pct int64 = 1

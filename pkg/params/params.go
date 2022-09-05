@@ -11,4 +11,5 @@ var (
 	PAGES_BEFORE_VACUUM_LOWER_THRESHOLD int64         = 1000
 	PAGES_BEFORE_VACUUM_UPPER_DIVISOR   int64         = 50
 	PROGRESS_REPORT_PERIOD              time.Duration = 60 * time.Second
+	PER_ROUND_DELAY                     time.Duration = 2 * time.Second
 )

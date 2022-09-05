@@ -402,7 +402,6 @@ func (pg *PgConnection) getIndexBloatStats(ctx context.Context, schema, index st
 	}
 }
 
-// QuoteIdentifier quotes an identifier for use in SQL statements.
 func QuoteIdentifier(identifier string) string {
 	return fmt.Sprintf("\"%s\"", identifier)
 }

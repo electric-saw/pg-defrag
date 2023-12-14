@@ -3,12 +3,19 @@ package db
 import (
 	"context"
 	"fmt"
+	"math"
 
 	"github.com/electric-saw/pg-defrag/pkg/params"
 )
 
-func (pg *PgConnection) CreateCleanPageFunction(ctx context.Context) (string, error) {
-	qry := `
+func (pg *PgConnection) CreatePgStatTupleExtension(ctx context.Context) error {
+	qry := "CREATE EXTENSION IF NOT EXISTS pgstattuple;"
+	_, err := pg.Conn.Exec(ctx, qry)
+	return err
+}
+
+func (pg *PgConnection) CreateCleanPageFunction(ctx context.Context) error {
+	qry := fmt.Sprintf(`
 	CREATE OR REPLACE FUNCTION public.pg_defrag_clean_pages_%d(
 		i_table_ident text,
 		i_column_ident text,
@@ -31,7 +38,6 @@ func (pg *PgConnection) CreateCleanPageFunction(ctx context.Context) (string, er
 			' SET ' || i_column_ident || ' = ' || i_column_ident ||
 			' WHERE ctid = ANY($1) RETURNING ctid';
 	BEGIN
-		-- Check page argument values
 		IF NOT (
 			i_page_offset IS NOT NULL AND i_page_offset >= 1 AND
 			i_to_page IS NOT NULL AND i_to_page >= 1 AND
@@ -39,8 +45,6 @@ func (pg *PgConnection) CreateCleanPageFunction(ctx context.Context) (string, er
 		THEN
 			RAISE EXCEPTION 'Wrong page arguments specified.';
 		END IF;
-		-- Check that session_replication_role is set to replica to
-		-- prevent triggers firing
 		IF NOT (
 			SELECT setting = 'replica'
 			FROM pg_catalog.pg_settings
@@ -48,10 +52,8 @@ func (pg *PgConnection) CreateCleanPageFunction(ctx context.Context) (string, er
 		THEN
 			RAISE EXCEPTION 'The session_replication_role must be set to replica.';
 		END IF;
-		-- Define minimal and maximal ctid values of the range
 		_min_ctid := (_from_page, 1)::text::tid;
 		_max_ctid := (i_to_page, i_max_tupples_per_page)::text::tid;
-		-- Build a list of possible ctid values of the range
 		SELECT array_agg((pi, ti)::text::tid)
 		INTO _ctid_list
 		FROM generate_series(_from_page, i_to_page) AS pi
@@ -71,7 +73,7 @@ func (pg *PgConnection) CreateCleanPageFunction(ctx context.Context) (string, er
 				END IF;
 			END LOOP;
 			_ctid_list := _next_ctid_list;
-			-- Finish processing if there are no tupples in the range left
+			-- Finish processing if there are no tuples in the range left
 			IF coalesce(array_length(_ctid_list, 1), 0) = 0 THEN
 				_result_page := _from_page - 1;
 				EXIT _outer_loop;
@@ -84,13 +86,14 @@ func (pg *PgConnection) CreateCleanPageFunction(ctx context.Context) (string, er
 		END IF;
 		RETURN _result_page;
 	END $$;
-`
-	_, err := pg.Conn.Exec(ctx, fmt.Sprintf(qry, pg.GetPID()))
-	return fmt.Sprintf("pg_defrag_clean_pages_%d", pg.GetPID()), err
+`, pg.GetPID())
+	_, err := pg.Conn.Exec(ctx, qry)
+	return err
 }
 
 func (pg *PgConnection) DropCleanPageFunction(ctx context.Context) error {
-	_, err := pg.Conn.Exec(ctx, fmt.Sprintf("drop function pg_defrag_clean_pages_%d", pg.GetPID()))
+	qry := fmt.Sprintf("DROP FUNCTION IF EXISTS public.pg_defrag_clean_pages_%d;", pg.GetPID())
+	_, err := pg.Conn.Exec(ctx, qry)
 	return err
 }
 
@@ -99,7 +102,7 @@ func (pg *PgConnection) CleanPages(ctx context.Context, schema, table string, co
 
 	var newToPage int64
 	err := pg.Conn.QueryRow(ctx, qry,
-		fmt.Sprintf("%s.%s", schema, table),
+		fmt.Sprintf("%s.%s", QuoteIdentifier(schema), QuoteIdentifier(table)),
 		column,
 		toPage,
 		pagesPerRound,
@@ -118,7 +121,7 @@ func (pg *PgConnection) GetUpdateColumn(ctx context.Context, schema, table strin
 		NOT attisdropped AND -- nor dropped
 		attrelid = (quote_ident($1) || '.' || quote_ident($2))::regclass
 		ORDER BY
-		-- Variable legth attributes have lower priority because of the chance
+		-- Variable length attributes have lower priority because of the chance
 		-- of being toasted
 		(attlen = -1),
 		-- Preferably not indexed attributes
@@ -152,38 +155,27 @@ func (pg *PgConnection) GetMaxTuplesPerPage(ctx context.Context, schema, table s
 }
 
 func (pg *PgConnection) GetPagesPerRound(pageCount, toPage int64) int64 {
-	var realPagesPerRound int64
-	var pagesPerRound int64
-
-	if pageCount > params.PAGES_PER_ROUND_DIVISOR {
-		realPagesPerRound = pageCount
-	} else {
-		realPagesPerRound = params.PAGES_PER_ROUND_DIVISOR
+	realPagesPerRound := float64(pageCount) / float64(params.PAGES_PER_ROUND_DIVISOR)
+	if realPagesPerRound <= 1 {
+		realPagesPerRound = 1
 	}
 
-	if realPagesPerRound < params.MAX_PAGES_PER_ROUND {
-		pagesPerRound = realPagesPerRound
-	} else {
-		pagesPerRound = params.MAX_PAGES_PER_ROUND
-	}
+	pagesPerRound := math.Min(realPagesPerRound, float64(params.MAX_PAGES_PER_ROUND))
+	result := int64(math.Min(math.Ceil(pagesPerRound), float64(toPage)))
 
-	if pagesPerRound >= toPage {
-		pagesPerRound = toPage
-	}
-	return pagesPerRound
+	return result
 }
 
 func (pg *PgConnection) GetPagesBeforeVacuum(pageCount, expectedPageCount int64) int64 {
-	var pages int64
-
-	if (pageCount / params.PAGES_BEFORE_VACUUM_LOWER_DIVISOR) < params.PAGES_BEFORE_VACUUM_LOWER_THRESHOLD {
-		pages = pageCount / params.PAGES_BEFORE_VACUUM_LOWER_DIVISOR
-	} else {
+	pages := pageCount / params.PAGES_BEFORE_VACUUM_LOWER_DIVISOR
+	if pages < params.PAGES_BEFORE_VACUUM_LOWER_THRESHOLD {
 		pages = pageCount / params.PAGES_BEFORE_VACUUM_LOWER_THRESHOLD
 	}
 
-	if !(pages > (expectedPageCount / params.PAGES_BEFORE_VACUUM_UPPER_DIVISOR)) {
-		pages = expectedPageCount / params.PAGES_BEFORE_VACUUM_UPPER_DIVISOR
+	result := pages
+	if result <= expectedPageCount/params.PAGES_BEFORE_VACUUM_UPPER_DIVISOR {
+		result = expectedPageCount / params.PAGES_BEFORE_VACUUM_UPPER_DIVISOR
 	}
-	return pages
+
+	return result
 }

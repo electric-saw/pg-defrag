@@ -46,6 +46,7 @@ type IndexBloatStats struct {
 	FreeSpace    int64   `db:"free_space"`
 }
 
+//gocyclo:ignore
 func (pg *PgConnection) ReindexTable(ctx context.Context, schema, table string, force, noReindex bool) (bool, error) {
 	var isReindexed bool = true
 

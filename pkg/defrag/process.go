@@ -136,6 +136,7 @@ func (p *Process) setLowPiority(pg *db.PgConnection) error {
 	return nil
 }
 
+//gocyclo:ignore
 func (p *Process) process(ctx context.Context, schema, table string, attepmt int, tableInfo *TableInfo) (bool, error) {
 	p.log.Infof("defragmenting table %s.%s", schema, table)
 	isSkipped := false
@@ -339,7 +340,7 @@ func (p *Process) process(ctx context.Context, schema, table string, attepmt int
 						p.log.Errorf("can't rollback cleaning transaction: %v", err)
 					}
 					toPage = lastToPage
-					break
+					break pageLoop
 				}
 
 				if err := tx.Commit(context.Background()); err != nil {

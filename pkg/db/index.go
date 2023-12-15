@@ -203,18 +203,13 @@ func (pg *PgConnection) ReindexIndexConcurrently(ctx context.Context, index *Ind
 	return nil
 }
 
-func (pg *PgConnection) DropTemporaryIndex(ctx context.Context, schema string) error {
-	_, err := pg.Conn.Exec(ctx, fmt.Sprintf("DROP INDEX CONCURRENTLY %s.%s;", schema, pg.getTempIndexName()))
-	return err
-}
-
 func (pg *PgConnection) ReindexIndexOldReplace(ctx context.Context, index *IndexDefinition) error {
 	start := time.Now()
 
 	if err := pg.Reindex(ctx, index); err != nil {
 		pg.log.Infof("Skipping reindex %s: %s", index.IndexName, err)
 
-		if err := pg.DropTemporaryIndex(ctx, index.Schema); err != nil {
+		if err := pg.dropTempIndex(ctx, index.Schema); err != nil {
 			return fmt.Errorf("unable to drop temporary index: %s.%s, %s", index.Schema, pg.getTempIndexName(), err)
 		}
 
@@ -228,7 +223,7 @@ func (pg *PgConnection) ReindexIndexOldReplace(ctx context.Context, index *Index
 		if err := pg.Analyze(ctx, index.Schema, index.Table); err != nil {
 			pg.log.Errorf("Autoanalyze functional index %s.%s failed: %s", index.Schema, index.IndexName, err)
 
-			if err := pg.DropTemporaryIndex(ctx, index.Schema); err != nil {
+			if err := pg.dropTempIndex(ctx, index.Schema); err != nil {
 				pg.log.Errorf("Unable to drop temporary index: %s.%s, %s", index.Schema, pg.getTempIndexName(), err)
 			}
 
@@ -276,7 +271,7 @@ func (pg *PgConnection) ReindexIndexOldReplace(ctx context.Context, index *Index
 			reindexDuration,
 			lockedAtlerAttempt)
 	} else {
-		if err := pg.DropTemporaryIndex(ctx, index.Schema); err != nil {
+		if err := pg.dropTempIndex(ctx, index.Schema); err != nil {
 			pg.log.Errorf("unable to drop temporary index: %s.%s, %s", index.Schema, pg.getTempIndexName(), err)
 			return err
 		}

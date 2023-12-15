@@ -2,14 +2,17 @@ package db
 
 import (
 	"context"
+	"fmt"
 
-	"github.com/jackc/pgx/v4"
+	"github.com/jackc/pgx/v5"
 	"github.com/sirupsen/logrus"
 )
 
 type PgConnection struct {
-	Conn *pgx.Conn
-	log  logrus.FieldLogger
+	Conn      *pgx.Conn
+	log       logrus.FieldLogger
+	connPid   uint32
+	pgVersion int
 }
 
 func NewConnection(ctx context.Context, connStr string, log logrus.FieldLogger) (*PgConnection, error) {
@@ -34,7 +37,25 @@ func NewConnectionWithConn(ctx context.Context, conn *pgx.Conn, log logrus.Field
 		return nil, err
 	}
 
-	return &PgConnection{Conn: conn, log: log}, nil
+	pid := conn.PgConn().PID()
+
+	res := conn.QueryRow(ctx, `select pg_backend_pid();`)
+	if err := res.Scan(&pid); err != nil {
+		return nil, fmt.Errorf("failed to get backend pid: %w", err)
+	}
+
+	pgVersion := 0
+
+	res = conn.QueryRow(ctx, `select current_setting('server_version_num')::int;`)
+	if err := res.Scan(&pgVersion); err != nil {
+		return nil, fmt.Errorf("failed to get pg version: %w", err)
+	}
+
+	return &PgConnection{
+		Conn:      conn,
+		log:       log,
+		connPid:   pid,
+		pgVersion: pgVersion}, nil
 
 }
 
@@ -45,7 +66,7 @@ func (pg *PgConnection) Close(ctx context.Context) {
 }
 
 func (pg *PgConnection) GetPID() uint32 {
-	return pg.Conn.PgConn().PID()
+	return pg.connPid
 }
 
 func (pg *PgConnection) GetPgStatTupleSchema(ctx context.Context) (string, error) {

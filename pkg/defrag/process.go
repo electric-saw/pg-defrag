@@ -11,7 +11,7 @@ import (
 	"github.com/electric-saw/pg-defrag/pkg/params"
 	"github.com/electric-saw/pg-defrag/pkg/sys"
 	"github.com/electric-saw/pg-defrag/pkg/utils"
-	"github.com/jackc/pgx/v4"
+	"github.com/jackc/pgx/v5"
 	"github.com/sirupsen/logrus"
 )
 
@@ -26,19 +26,19 @@ type JobInfo struct {
 }
 
 type Process struct {
-	InitialVacuum  bool
-	InitialReindex bool
-	NoReindex      bool
-	Force          bool
-	RoutineVacuum  bool
-	Jobs           []JobInfo
-	log            Logger
-	pg             *db.PgConnection
+	NoInitialVacuum bool
+	InitialReindex  bool
+	NoReindex       bool
+	Force           bool
+	RoutineVacuum   bool
+	Jobs            []JobInfo
+	log             Logger
+	Pg              *db.PgConnection
 }
 
 type TableInfo struct {
-	InitialStats *db.PgSizeStats
-	Stats        *db.PgSizeStats
+	BaseStats *db.PgSizeStats
+	Stats     *db.PgSizeStats
 }
 
 func NewProcessor(connStr string, log Logger) (*Process, error) {
@@ -48,57 +48,71 @@ func NewProcessor(connStr string, log Logger) (*Process, error) {
 	}
 
 	process := &Process{
-		log: log,
-		pg:  conn,
+		log:             log,
+		Pg:              conn,
+		NoInitialVacuum: false,
+		InitialReindex:  false,
+		NoReindex:       false,
+		Force:           false,
+		RoutineVacuum:   true,
 	}
 
 	return process, nil
 }
 
-func (p *Process) RunReindexTable(ctx context.Context, schema, table string) (bool, int, error) {
+func (p *Process) RunReindexTable(ctx context.Context, schema, table string) (bool, error) {
 	if len(schema) == 0 {
-		supposedSchema, err := p.pg.GetSchemaOfTable(ctx, table)
+		supposedSchema, err := p.Pg.GetSchemaOfTable(ctx, table)
 		if err != nil {
-			return false, 0, fmt.Errorf("can't get schema %w", err)
+			return false, fmt.Errorf("can't get schema %w", err)
 		}
 		schema = supposedSchema
 	}
 
-	return p.pg.ReindexTable(ctx, schema, table, false)
+	return p.Pg.ReindexTable(ctx, schema, table, false, false)
 }
 
 func (p *Process) Run(ctx context.Context) (bool, error) {
-	if err := p.setLowPiority(p.pg); err != nil {
+	if err := p.setLowPiority(p.Pg); err != nil {
 		return false, err
 	}
 
-	if err := p.pg.SetSessionReplicaRole(ctx); err != nil {
+	if err := p.Pg.SetSessionReplicaRole(ctx); err != nil {
 		p.log.Errorf("can't set session replica role: %v", err)
 	}
 
-	if fName, err := p.pg.CreateCleanPageFunction(ctx); err != nil {
+	if err := p.Pg.CreateCleanPageFunction(ctx); err != nil {
 		p.log.Errorf("can't create clean page function: %v", err)
 
 		return false, err
-	} else {
-		p.log.Infof("clean page function created: %s", fName)
-		defer func() {
-			if err := p.pg.DropCleanPageFunction(context.Background()); err != nil {
-				p.log.Errorf("can't drop clean page function: %v", err)
-			}
-		}()
 	}
+
+	defer func() {
+		if err := p.Pg.DropCleanPageFunction(context.Background()); err != nil {
+			p.log.Errorf("can't drop clean page function: %v", err)
+		}
+	}()
+
+	p.log.Infof("clean page function created")
+
+	if err := p.Pg.CreatePgStatTupleExtension(ctx); err != nil {
+		p.log.Errorf("can't create pgstattuple extension: %v", err)
+
+		return false, err
+	}
+
+	p.log.Infof("pgstattuple extension ensured")
 
 	for _, job := range p.Jobs {
 		if len(job.Schema) == 0 {
-			supposedSchema, err := p.pg.GetSchemaOfTable(ctx, job.Table)
+			supposedSchema, err := p.Pg.GetSchemaOfTable(ctx, job.Table)
 			if err != nil {
 				return false, fmt.Errorf("can't get schema %w", err)
 			}
 			job.Schema = supposedSchema
 		}
 
-		if cleaned, err := p.process(ctx, job.Schema, job.Table); err != nil {
+		if cleaned, err := p.process(ctx, job.Schema, job.Table, 0, new(TableInfo)); err != nil {
 			return false, err
 		} else if !cleaned {
 			return cleaned, nil
@@ -114,120 +128,129 @@ func (p *Process) setLowPiority(pg *db.PgConnection) error {
 	if pid == 0 || pg.Conn.Config().User == "postgres" {
 		if err := sys.SetIOPriorityPID(int(pid), sys.IOPRIO_CLASS_IDLE); err != nil {
 			p.log.Error(err)
-			p.log.Warnf("can´t apply ionice on pid %d, run 'ionice -c 3 -p %d'", pid, pid)
+			p.log.Warnf("can't apply ionice on pid %d, run 'ionice -c 3 -p %d'", pid, pid)
 		}
 	} else {
-		p.log.Warnf("can´t apply ionice on pid %d, run o database host 'ionice -c 3 -p %d'", pid, pid)
+		p.log.Warnf("can't apply ionice on pid %d, run o database host 'ionice -c 3 -p %d'", pid, pid)
 	}
 	return nil
 }
 
-func (p *Process) process(ctx context.Context, schema, table string) (bool, error) {
+//gocyclo:ignore
+func (p *Process) process(ctx context.Context, schema, table string, attepmt int, tableInfo *TableInfo) (bool, error) {
 	p.log.Infof("defragmenting table %s.%s", schema, table)
-	isLocked := false
-	tableInfo := &TableInfo{}
 	isSkipped := false
+	isLocked := false
+	var err error
 
-	p.log.Infof("try advisory lock")
-	locked, err := p.pg.TryAdvisoryLock(ctx, schema, table)
-	switch {
-	case err != nil:
+	if ok, err := p.Pg.TryAdvisoryLock(ctx, schema, table); err != nil {
 		return false, fmt.Errorf("can't try advisory lock: %v", err)
-	case locked:
-		p.log.Infof("another instance is working with table %s.%s", schema, table)
-		isLocked = locked
-	default:
-		isLocked = locked
-		p.log.Infof("table %s.%s is unlocked", schema, table)
+	} else {
+		isLocked = ok
 	}
 
-	if stats, err := p.pg.GetPgSizeStats(ctx, schema, table); err != nil {
-		return false, fmt.Errorf("can't get pg size stats: %v", err)
+	if stats, err := p.Pg.GetPgSizeStats(ctx, schema, table); err != nil {
+		return false, fmt.Errorf("can't get Pg size stats: %v", err)
 	} else {
 		tableInfo.Stats = stats
-		if tableInfo.InitialStats == nil {
-			tableInfo.InitialStats = stats
+		if tableInfo.BaseStats == nil {
+			tableInfo.BaseStats = stats
 		}
 	}
 
-	if p.InitialVacuum {
+	if !isLocked && !p.NoInitialVacuum {
 		start := time.Now()
-		if err := p.pg.Vacuum(ctx, schema, table); err != nil {
+
+		if err := p.Pg.Vacuum(ctx, schema, table, false); err != nil {
 			return false, fmt.Errorf("can't do initial vacuum table %s.%s: %v", schema, table, err)
 		}
+
 		elapsed := time.Since(start)
 
-		if stats, err := p.pg.GetPgSizeStats(ctx, schema, table); err != nil {
-			return false, fmt.Errorf("can't get pg size stats: %v", err)
+		if stats, err := p.Pg.GetPgSizeStats(ctx, schema, table); err != nil {
+			return false, fmt.Errorf("can't get Pg size stats: %v", err)
 		} else {
 			tableInfo.Stats = stats
 		}
-		p.log.Infof("initial vacuum: %d pages left on table %s.%s took %s", tableInfo.Stats.PageCount, schema, table, elapsed)
-	}
 
-	if tableInfo.Stats.PageCount <= 1 {
-		p.log.Infof("table %s.%s has no pages, skipping defragmentation", schema, table)
-		isSkipped = true
+		p.log.Infof("vacuum initial: %d pages left on table %s.%s took %s", tableInfo.Stats.PageCount, schema, table, elapsed)
+
+		if tableInfo.Stats.PageCount <= 1 {
+			p.log.Infof("Skipping defragmentation of table %s.%s, it has no pages", schema, table)
+			isSkipped = true
+		}
 	}
 
 	isReindexed := false
-	attempt := 0
-	if p.InitialReindex && !p.NoReindex {
-		if ok, reindexAttempt, err := p.pg.ReindexTable(ctx, schema, table, p.Force); err != nil {
-			return false, fmt.Errorf("can't do initial reindex table %s.%s: %v", schema, table, err)
-		} else {
-			isReindexed = ok
-			attempt = reindexAttempt
-		}
-	}
+	var bloatStats *db.PgBloatStats
 
-	bloatStats, err := p.pg.GetBloatStats(ctx, schema, table)
-	if err != nil {
-		return false, fmt.Errorf("can't get bloat stats: %v", err)
-	}
-
-	if bloatStats.EffectivePageCount > 0 {
-		p.log.Infof("bloat statistics with pgstattuple")
-	} else {
-		analyzeTime := time.Now()
-		if err := p.pg.Analyze(ctx, schema, table); err != nil {
-			return false, fmt.Errorf("can't do analyze table %s.%s: %v", schema, table, err)
-		} else {
-			p.log.Infof("analyze table %s.%s took %s", schema, table, time.Since(analyzeTime))
+	if !isLocked && !isSkipped {
+		if p.InitialReindex && !p.NoReindex && attepmt == 0 {
+			isReindexed, err = p.Pg.ReindexTable(ctx, schema, table, p.Force, p.NoReindex)
+			if err != nil {
+				return false, fmt.Errorf("can't do initial reindex table %s.%s: %v", schema, table, err)
+			}
 		}
 
-		bloatStats, err = p.pg.GetBloatStats(ctx, schema, table)
+		getStatsTime := time.Now()
+
+		bloatStats, err = p.Pg.GetBloatStats(ctx, schema, table)
 		if err != nil {
 			return false, fmt.Errorf("can't get bloat stats: %v", err)
 		}
 
+		if bloatStats.EffectivePageCount > 0 {
+			p.log.Infof("bloat statistics with pgstattuple: duration %s", time.Since(getStatsTime))
+		} else {
+			analyzeTime := time.Now()
+			if err := p.Pg.Analyze(ctx, schema, table); err != nil {
+				return false, fmt.Errorf("can't do analyze table %s.%s: %v", schema, table, err)
+			} else {
+				p.log.Infof("analyze table %s.%s took %s", schema, table, time.Since(analyzeTime))
+			}
+
+			getStatsTime = time.Now()
+			bloatStats, err = p.Pg.GetBloatStats(ctx, schema, table)
+			if err != nil {
+				return false, fmt.Errorf("can't get bloat stats: %v", err)
+			}
+
+			if bloatStats.EffectivePageCount > 0 {
+				p.log.Infof("bloat statistics with pgstattuple: duration %s", time.Since(getStatsTime))
+			} else {
+				p.log.Info("Can't get bloat statistics with pgstattuple, skipping defragmentation")
+				isSkipped = true
+			}
+		}
 	}
 
 	if !isLocked && !isSkipped {
+
 		canBeCompacted := bloatStats.FreePercent > 0 && tableInfo.Stats.PageCount > bloatStats.EffectivePageCount
+
 		if canBeCompacted {
-			p.log.Infof("statistics: %d pages (%d pages including toasts and indexes), it is expected that ~%0.3f%% (%d pages) can be compacted with the estimated space saving being %s.",
+			p.log.Warnf("Statistics: %d pages (%d pages including toasts and indexes), it is expected that ~%0.3f%% (%d pages) can be compacted with the estimated space saving being %s.",
 				tableInfo.Stats.PageCount,
 				tableInfo.Stats.TotalPageCount,
 				bloatStats.FreePercent,
 				(tableInfo.Stats.PageCount - bloatStats.EffectivePageCount),
 				utils.Humanize(bloatStats.FreeSpace))
 		} else {
-			p.log.Infof("statistics: %d pages (%d pages including toasts and indexes)",
+			p.log.Warnf("Statistics: %d pages (%d pages including toasts and indexes)",
 				tableInfo.Stats.PageCount,
 				tableInfo.Stats.TotalPageCount)
 		}
 
-		if exists, err := p.pg.HasTrigger(ctx, schema, table); err != nil {
+		if exists, err := p.Pg.HasTriggers(ctx, schema, table); err != nil {
 			return false, fmt.Errorf("can't check trigger exists: %v", err)
 		} else if exists {
-			p.log.Warnf("table %s.%s has 'always' or 'replica' triggers , skipping defragmentation", schema, table)
+			p.log.Warnf("Table %s.%s has 'always' or 'replica' triggers , skipping defragmentation", schema, table)
 			isSkipped = true
 		}
 
 		if !p.Force {
 			if tableInfo.Stats.PageCount < params.MINIMAL_COMPACT_PAGES {
-				p.log.Warnf("table %s.%s has less than %d (actual is %d) pages, skipping defragmentation",
+				p.log.Warnf("Table %s.%s has less than %d (actual is %d) pages, skipping defragmentation",
 					schema,
 					table,
 					params.MINIMAL_COMPACT_PAGES,
@@ -236,10 +259,10 @@ func (p *Process) process(ctx context.Context, schema, table string) (bool, erro
 			}
 
 			if bloatStats.FreePercent < params.MINIMAL_COMPACT_PERCENT {
-				p.log.Warnf("table %s.%s has less than %0.d%% space to compact (actualis %0.3f%%), skipping defragmentation",
+				p.log.Warnf("Table %s.%s has less than %0.f%% space to compact (actual is %0.3f%%), skipping defragmentation",
 					schema,
 					table,
-					params.MINIMAL_COMPACT_PERCENT,
+					params.MINIMAL_COMPACT_PERCENT*100,
 					bloatStats.FreePercent)
 				isSkipped = true
 			}
@@ -247,23 +270,27 @@ func (p *Process) process(ctx context.Context, schema, table string) (bool, erro
 	}
 
 	if !isLocked && !isSkipped {
+		if p.Force {
+			p.log.Warn("Force mode is enabled, defragmentation will be performed")
+		}
+
 		vacuumPageCount := int64(0)
-		initialSizeStats := tableInfo.Stats
+		initialSizeStats := tableInfo.Stats.Copy()
 		toPage := tableInfo.Stats.PageCount - 1
 		progressReportTime := time.Now()
-		cleanPagesTotalDurarion := int64(0)
+		cleanPagesTotalDuration := time.Duration(0)
 		lastLoop := tableInfo.Stats.PageCount - 1
 
 		expectedPageCount := tableInfo.Stats.PageCount
-		columnName, err := p.pg.GetUpdateColumn(ctx, schema, table)
+		columnName, err := p.Pg.GetUpdateColumn(ctx, schema, table)
 		if err != nil {
 			return false, fmt.Errorf("can't get update column of table %s.%s: %v", schema, table, err)
 		}
 
-		pagesPerRound := p.pg.GetPagesPerRound(tableInfo.InitialStats.PageCount, toPage)
-		pagesBeforeVacuum := p.pg.GetPagesBeforeVacuum(tableInfo.Stats.PageCount, expectedPageCount)
+		pagesPerRound := p.Pg.GetPagesPerRound(tableInfo.BaseStats.PageCount, toPage)
+		pagesBeforeVacuum := p.Pg.GetPagesBeforeVacuum(tableInfo.Stats.PageCount, expectedPageCount)
 
-		maxTuplesPerPage, err := p.pg.GetMaxTuplesPerPage(ctx, schema, table)
+		maxTuplesPerPage, err := p.Pg.GetMaxTuplesPerPage(ctx, schema, table)
 		if err != nil {
 			return false, fmt.Errorf("can't get max tuples per page: %v", err)
 		}
@@ -272,28 +299,35 @@ func (p *Process) process(ctx context.Context, schema, table string) (bool, erro
 		p.log.Infof("set page/round: %d", pagesPerRound)
 		p.log.Infof("pages pages/vacuum: %d", pagesBeforeVacuum)
 
+		var startTime time.Time
 		var lastToPage int64
 		var loop int64
+	pageLoop:
 		for loop = tableInfo.Stats.PageCount; loop > 0; loop-- {
-			tx, err := p.pg.Conn.Begin(ctx)
+			startTime = time.Now()
+
+			tx, err := p.Pg.Conn.Begin(ctx)
 			if err != nil {
 				return false, fmt.Errorf("can't begin transaction: %v", err)
 			}
 
-			// startTime := time.Now()
 			lastToPage = toPage
 
-			toPage, err = p.pg.CleanPages(ctx, schema, table, columnName, lastToPage, pagesPerRound, maxTuplesPerPage)
+			toPage, err = p.Pg.CleanPages(ctx, schema, table, columnName, lastToPage, pagesPerRound, maxTuplesPerPage)
+			cleanPagesTotalDuration += time.Since(startTime)
+
 			if err != nil {
 				if errRollback := tx.Rollback(ctx); err != nil {
+					p.log.Errorf("Rollbacking because of error: %v", err)
 					return false, fmt.Errorf("can't rollback transaction: %v", errRollback)
 				}
 				switch {
 				case strings.Contains(err.Error(), "deadlock detected"):
 					p.log.Error("detected deadlock during cleaning")
-					continue
+					continue pageLoop
 				case strings.Contains(err.Error(), "cannot extract system attribute"):
 					p.log.Error("system attribute extraction error has occurred, processing stopped")
+					break pageLoop
 				case errors.Is(err, pgx.ErrNoRows):
 					p.log.Errorf("incorrect result of cleaning: column_name %s, to_page %d, pages_per_round %d, max_tupples_per_page %d",
 						columnName, lastToPage, pagesPerRound, maxTuplesPerPage)
@@ -301,27 +335,37 @@ func (p *Process) process(ctx context.Context, schema, table string) (bool, erro
 					return false, fmt.Errorf("can't clean pages: %v", err)
 				}
 			} else {
-				if err := tx.Commit(ctx); err != nil {
-					return false, fmt.Errorf("can't commit transaction: %v", err)
-				}
 				if toPage == -1 {
+					if err := tx.Rollback(context.Background()); err != nil {
+						p.log.Errorf("can't rollback cleaning transaction: %v", err)
+					}
 					toPage = lastToPage
-					break
+					break pageLoop
+				}
+
+				if err := tx.Commit(context.Background()); err != nil {
+					return false, fmt.Errorf("can't commit cleaning transaction: %v", err)
 				}
 			}
 
-			time.Sleep(params.PER_ROUND_DELAY)
+			spentTime := time.Since(startTime)
 
-			if time.Since(progressReportTime) >= params.PROGRESS_REPORT_PERIOD {
-				var pct int64 = 1
+			sleepTime := time.Duration(params.DELAY_RATIO * spentTime.Microseconds() * int64(time.Microsecond))
+
+			if sleepTime > 0 {
+				time.Sleep(sleepTime)
+			}
+
+			if time.Since(progressReportTime) >= params.PROGRESS_REPORT_PERIOD && lastToPage != toPage {
+				progressPercentage := float64(-1)
+
 				if bloatStats.EffectivePageCount > 0 {
-					pct = (100 * (initialSizeStats.PageCount - toPage - 1) / (tableInfo.Stats.PageCount - bloatStats.EffectivePageCount))
+					progressPercentage = float64(100) * (float64(initialSizeStats.PageCount-toPage-1) / float64(tableInfo.BaseStats.PageCount-bloatStats.EffectivePageCount))
 				}
-
-				cleaned := (tableInfo.Stats.PageCount - toPage - 1)
-
-				p.log.Infof("progress: %d%%, %d pages cleaned, %d pages left", pct, cleaned, (tableInfo.InitialStats.PageCount-bloatStats.EffectivePageCount)-cleaned)
-
+				p.log.Infof("Progress: %.2f%%, %d pages cleaned, %d pages left",
+					progressPercentage,
+					tableInfo.Stats.PageCount-toPage,
+					(tableInfo.BaseStats.PageCount-bloatStats.EffectivePageCount)-(initialSizeStats.PageCount-toPage-1))
 				progressReportTime = time.Now()
 			}
 
@@ -329,152 +373,159 @@ func (p *Process) process(ctx context.Context, schema, table string) (bool, erro
 			vacuumPageCount += (lastToPage - toPage)
 
 			if p.RoutineVacuum && vacuumPageCount >= pagesBeforeVacuum {
-				dur := cleanPagesTotalDurarion / (lastLoop - loop)
-				var avgDur float64
-				if dur > 0 {
-					avgDur = float64(dur)
-				} else {
-					avgDur = 0.0001
-				}
-				p.log.Warnf("cleaning in average: %.1f pages/second (%d seconds per %d pages).",
-					float64(pagesPerRound)/avgDur, dur, pagesPerRound)
+				duration := cleanPagesTotalDuration.Seconds() / (float64(lastLoop) - float64(loop))
 
-				cleanPagesTotalDurarion = 0
+				avgDuration := 0.0001
+				if duration > 0 {
+					avgDuration = duration
+				}
+
+				p.log.Warnf("Cleaning in average: %.1f pages/second (%.1f seconds per %d pages).",
+					float64(pagesPerRound)/avgDuration,
+					avgDuration,
+					pagesPerRound)
+
+				cleanPagesTotalDuration = time.Duration(0)
 				lastLoop = loop
 
-				vacuumTime := time.Now()
-				if err := p.pg.Vacuum(ctx, schema, table); err != nil {
+				vacuumStart := time.Now()
+
+				if err := p.Pg.Vacuum(ctx, schema, table, false); err != nil {
 					return false, fmt.Errorf("can't vacuum table %s.%s: %v", schema, table, err)
 				}
-				vacuumTimeTotal := time.Since(vacuumTime)
 
-				newStats, err := p.pg.GetPgSizeStats(ctx, schema, table)
-				if err != nil {
-					return false, fmt.Errorf("can't get table stats after vacuum: %v", err)
-				}
-				tableInfo.Stats = newStats
+				vacuumTime := time.Since(vacuumStart)
 
-				if tableInfo.Stats.PageCount > (toPage + 1) {
-					p.log.Warnf("vacuum routine: can not clean %d pages, %d pages left, duration %s",
+				if tableInfo.Stats.PageCount > toPage+1 {
+					p.log.Infof("Vacuum routine: can not clean %d pages, %d pages left, duration %s",
 						tableInfo.Stats.PageCount-toPage-1,
 						tableInfo.Stats.PageCount,
-						vacuumTimeTotal)
+						vacuumTime)
 				} else {
-					p.log.Infof("vacuum routine: %d pages left, duration %s", tableInfo.Stats.PageCount, vacuumTimeTotal)
+					p.log.Infof("Vacuum routine: %d pages left, duration %s", tableInfo.Stats.PageCount, vacuumTime)
 				}
 
 				vacuumPageCount = 0
 
 				lastPagesBeforeVacuum := pagesBeforeVacuum
-				pagesBeforeVacuum = p.pg.GetPagesBeforeVacuum(tableInfo.Stats.PageCount, expectedPageCount)
+				pagesBeforeVacuum = p.Pg.GetPagesBeforeVacuum(tableInfo.Stats.PageCount, expectedPageCount)
 				if pagesBeforeVacuum != lastPagesBeforeVacuum {
-					p.log.Warnf("set pages/vacuum: %d", pagesBeforeVacuum)
+					p.log.Warnf("Set pages/vacuum: %d", pagesBeforeVacuum)
 				}
 			}
 
 			if toPage >= tableInfo.Stats.PageCount {
 				toPage = tableInfo.Stats.PageCount - 1
 			}
-
 			if toPage <= 1 {
 				toPage = 0
 				break
 			}
 
 			lastPagesPerRound := pagesPerRound
-			pagesPerRound = p.pg.GetPagesPerRound(tableInfo.Stats.PageCount, expectedPageCount)
+
+			pagesPerRound = p.Pg.GetPagesPerRound(tableInfo.Stats.PageCount, toPage)
 
 			if pagesPerRound != lastPagesPerRound {
-				p.log.Warnf("set pages/round: %d", pagesPerRound)
+				p.log.Warnf("Set pages/round: %d", pagesPerRound)
 			}
 		}
+
 		if loop == 0 {
-			p.log.Warn("max loop reached")
+			p.log.Warnf("Max loop reached")
 		}
 
 		if toPage > 0 {
-			vacuumTime := time.Now()
-			if err := p.pg.Vacuum(ctx, schema, table); err != nil {
+			vacuumStart := time.Now()
+			time.Sleep(1 * time.Second)
+			if err := p.Pg.Vacuum(ctx, schema, table, false); err != nil {
 				return false, fmt.Errorf("can't vacuum table %s.%s: %v", schema, table, err)
 			}
-			vacuumTimeTotal := time.Since(vacuumTime)
 
-			newStats, err := p.pg.GetPgSizeStats(ctx, schema, table)
-			if err != nil {
-				return false, fmt.Errorf("can't get table stats after vacuum: %v", err)
-			}
-			tableInfo.Stats = newStats
+			vacuumTime := time.Since(vacuumStart)
 
-			if tableInfo.Stats.PageCount > (toPage + pagesPerRound) {
-				p.log.Warnf("vacuum final: can not clean %d pages, %d pages left, duration %s",
-					tableInfo.Stats.PageCount-toPage-1,
-					tableInfo.Stats.PageCount,
-					vacuumTimeTotal)
+			if stats, err := p.Pg.GetPgSizeStats(ctx, schema, table); err != nil {
+				return false, fmt.Errorf("can't get table info after vacuum: %v", err)
 			} else {
-				p.log.Infof("vacuum final: %d pages left, duration %s", tableInfo.Stats.PageCount, vacuumTimeTotal)
+				tableInfo.Stats = stats
+			}
+
+			if tableInfo.Stats.PageCount > toPage+pagesPerRound {
+				p.log.Infof("Vacuum final: cannot clean %d pages, %d pages left, duration %s",
+					tableInfo.Stats.PageCount-toPage-pagesPerRound,
+					tableInfo.Stats.PageCount,
+					vacuumTime)
+			} else {
+				p.log.Infof("Vacuum final: %d pages left, duration %s",
+					tableInfo.Stats.PageCount,
+					vacuumTime)
 			}
 		}
 
-		analyzeTime := time.Now()
-		if err := p.pg.Analyze(ctx, schema, table); err != nil {
+		analyzeStart := time.Now()
+		if err := p.Pg.Analyze(ctx, schema, table); err != nil {
 			return false, fmt.Errorf("can't analyze table %s.%s: %v", schema, table, err)
 		}
-		analyzeTimeTotal := time.Since(analyzeTime)
-		p.log.Infof("analyze final: duration %s", analyzeTimeTotal)
 
-		getStatTime := time.Now()
-		newBloatStats, err := p.pg.GetBloatStats(ctx, schema, table)
+		analyzeTime := time.Since(analyzeStart)
+
+		p.log.Infof("Analyze final: duration %s", analyzeTime)
+
+		getStatsStart := time.Now()
+
+		bloatStats, err = p.Pg.GetBloatStats(ctx, schema, table)
 		if err != nil {
 			return false, fmt.Errorf("can't get table stats after analyze: %v", err)
 		}
-		bloatStats = newBloatStats
 
-		p.log.Infof("bloat statistics with pgstattuple: duration %s", time.Since(getStatTime))
+		p.log.Infof("Bloat statistics with pgstattuple: duration %s", time.Since(getStatsStart))
 	}
 
-	willBeSkipped := (!isLocked &&
-		(isSkipped || tableInfo.Stats.PageCount < params.MINIMAL_COMPACT_PAGES || bloatStats.FreePercent < params.MINIMAL_COMPACT_PERCENT))
+	willBeSkipped := !isLocked && (isLocked || tableInfo.Stats.PageCount < params.MINIMAL_COMPACT_PAGES || bloatStats.FreePercent < params.MINIMAL_COMPACT_PERCENT)
 
-	if !isLocked && (!p.NoReindex && (!isSkipped || attempt == 3) || (!isReindexed && isSkipped && attempt < 3)) {
-		if ok, _, err := p.pg.ReindexTable(ctx, schema, table, p.Force); err != nil {
-			return false, fmt.Errorf("can't reindex table %s.%s: %v", schema, table, err)
+	if !isLocked && (!p.NoReindex && (!isSkipped || attepmt >= params.MAX_RETRY_COUNT || (!isReindexed && !isSkipped && attepmt == 0))) {
+		if ok, err := p.Pg.ReindexTable(ctx, schema, table, p.Force, p.NoReindex); err != nil {
+			p.log.Errorf("can't reindex table %s.%s: %v", schema, table, err)
+			isReindexed = ok || isReindexed
 		} else {
 			isReindexed = ok || isReindexed
 		}
 
 		if !p.NoReindex {
-			newTableStats, err := p.pg.GetPgSizeStats(ctx, schema, table)
+			stats, err := p.Pg.GetPgSizeStats(ctx, schema, table)
 			if err != nil {
 				return false, fmt.Errorf("can't get table info after reindex: %v", err)
 			}
-			tableInfo.Stats = newTableStats
+
+			tableInfo.Stats = stats
 		}
 	}
 
 	if !isLocked && !(isSkipped && !isReindexed) {
-		completed := (willBeSkipped || !isSkipped) && isReindexed
-		if completed {
-			p.log.Info("processing completed")
+		// TODO  && (defined $is_reindexed ? $is_reindexed : 1));
+		complete := ((willBeSkipped || isSkipped) && isReindexed)
+		if complete {
+			p.log.Info("Processing completed")
 		} else {
-			p.log.Info("incomplete processing")
+			p.log.Info("Incomplete processing")
 		}
 
-		if bloatStats.FreePercent > 0 && tableInfo.Stats.PageCount > bloatStats.EffectivePageCount && !completed {
-			p.log.Warnf("processing results: %d pages (%d pages including toasts and indexes), size has been reduced by %s (%s including toasts and indexes) in total. This attempt has been initially expected to compact ~%f%% more space (%d pages, %s)",
+		if bloatStats.FreePercent > 0 && tableInfo.Stats.PageCount > bloatStats.EffectivePageCount && !complete {
+			p.log.Infof("Processing results: %d pages (%d pages including toasts and indexes), size has been reduced by %s (%s including toasts and indexes) in total. This attempt has been initially expected to compact ~%.2f%% more space (%d pages, %s)",
 				tableInfo.Stats.PageCount,
 				tableInfo.Stats.TotalPageCount,
-				utils.Humanize(tableInfo.InitialStats.Size-tableInfo.Stats.Size),
-				utils.Humanize(tableInfo.InitialStats.TotalSize-tableInfo.Stats.TotalSize),
+				utils.Humanize(tableInfo.BaseStats.Size-tableInfo.Stats.Size),
+				utils.Humanize(tableInfo.BaseStats.TotalSize-tableInfo.Stats.TotalSize),
 				bloatStats.FreePercent,
 				tableInfo.Stats.PageCount-bloatStats.EffectivePageCount,
 				utils.Humanize(bloatStats.FreeSpace),
 			)
 		} else {
-			p.log.Warnf("processing results: %d pages left (%d pages including toasts and indexes), size reduced by %s (%s including toasts and indexes) in total.",
+			p.log.Infof("Processing results: %d pages left (%d pages including toasts and indexes), size reduced by %s (%s including toasts and indexes) in total.",
 				tableInfo.Stats.PageCount,
 				tableInfo.Stats.TotalPageCount,
-				utils.Humanize(tableInfo.InitialStats.Size-tableInfo.Stats.Size),
-				utils.Humanize(tableInfo.InitialStats.TotalSize-tableInfo.Stats.TotalSize),
+				utils.Humanize(tableInfo.BaseStats.Size-tableInfo.Stats.Size),
+				utils.Humanize(tableInfo.BaseStats.TotalSize-tableInfo.Stats.TotalSize),
 			)
 		}
 	}
@@ -483,5 +534,5 @@ func (p *Process) process(ctx context.Context, schema, table string) (bool, erro
 }
 
 func (p *Process) Close() {
-	p.pg.Close(context.Background())
+	p.Pg.Close(context.Background())
 }

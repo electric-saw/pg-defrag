@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/georgysavva/scany/pgxscan"
+	"github.com/georgysavva/scany/v2/pgxscan"
 )
 
 type PgSizeStats struct {
@@ -73,4 +73,13 @@ func (pg *PgConnection) GetBloatStats(ctx context.Context, schema, table string)
 	var stats PgBloatStats
 	err = pgxscan.Get(ctx, pg.Conn, &stats, qry, schema, table)
 	return &stats, err
+}
+
+func (s *PgSizeStats) Copy() *PgSizeStats {
+	return &PgSizeStats{
+		Size:           s.Size,
+		TotalSize:      s.TotalSize,
+		PageCount:      s.PageCount,
+		TotalPageCount: s.TotalPageCount,
+	}
 }

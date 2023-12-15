@@ -19,3 +19,7 @@ func (pg *PgConnection) TryAdvisoryLock(ctx context.Context, schema, table strin
 	}
 	return isLocked == 0, nil
 }
+
+func (pg *PgConnection) GetVersionNum() int {
+	return pg.pgVersion
+}

@@ -10,6 +10,7 @@ import (
 
 	"github.com/electric-saw/pg-defrag/pkg/defrag"
 	"github.com/electric-saw/pg-defrag/pkg/params"
+	"github.com/pterm/pterm"
 	"github.com/sirupsen/logrus"
 )
 
@@ -21,18 +22,8 @@ func main() {
 	}
 
 	p.Jobs = jobList(p)
-	p.NoReindex = false
-	p.RoutineVacuum = true
-	p.NoInitialVacuum = false
-	p.Force = true
+	p.NoInitialVacuum = true
 
-	params.MINIMAL_COMPACT_PAGES = 10
-	params.MINIMAL_COMPACT_PERCENT = .10
-	params.PAGES_PER_ROUND_DIVISOR = 1000
-	params.MAX_PAGES_PER_ROUND = 10
-	params.PAGES_BEFORE_VACUUM_LOWER_DIVISOR = 16
-	params.PAGES_BEFORE_VACUUM_LOWER_THRESHOLD = 1000
-	params.PAGES_BEFORE_VACUUM_UPPER_DIVISOR = 50
 	params.PROGRESS_REPORT_PERIOD = 5 * time.Second
 
 	defer p.Close()
@@ -71,6 +62,23 @@ func jobList(p *defrag.Process) []defrag.JobInfo {
 			}, table) {
 				tablesToDefrag = append(tablesToDefrag, table)
 			}
+		}
+
+		slices.Sort(tablesToDefrag)
+
+		tablesToDefrag, _ = pterm.
+			DefaultInteractiveMultiselect.
+			WithOptions(tablesToDefrag).
+			WithDefaultText("Select tables to defrag").
+			WithFilter(true).
+			// WithKeyConfirm(keys.Enter).
+			// WithKeySelect(keys.Space).
+			WithCheckmark(&pterm.Checkmark{Checked: pterm.Green("+"), Unchecked: pterm.Red("-")}).
+			Show()
+
+		if len(tablesToDefrag) == 0 {
+			logrus.Info("No tables selected, exiting")
+			os.Exit(0)
 		}
 	} else {
 		tablesToDefrag = strings.Split(tablesEnv, ",")

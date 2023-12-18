@@ -160,8 +160,11 @@ func (pg *PgConnection) GetPagesPerRound(pageCount, toPage int64) int64 {
 		realPagesPerRound = 1
 	}
 
-	pagesPerRound := math.Min(realPagesPerRound, float64(params.MAX_PAGES_PER_ROUND))
+	pagesPerRound := math.Min(realPagesPerRound, float64(params.MAX_PAGES_PER_ROUND_FUNC(pageCount)))
 	result := int64(math.Min(math.Ceil(pagesPerRound), float64(toPage)))
+	if result < 1 {
+		result = 1
+	}
 
 	return result
 }

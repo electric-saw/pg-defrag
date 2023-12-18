@@ -149,6 +149,11 @@ func (p *Process) process(ctx context.Context, schema, table string, attepmt int
 		isLocked = ok
 	}
 
+	if isLocked {
+		p.log.Infof("Table %s.%s is locked, skipping defragmentation", schema, table)
+		return false, nil
+	}
+
 	if stats, err := p.Pg.GetPgSizeStats(ctx, schema, table); err != nil {
 		return false, fmt.Errorf("can't get Pg size stats: %v", err)
 	} else {
@@ -229,7 +234,7 @@ func (p *Process) process(ctx context.Context, schema, table string, attepmt int
 		canBeCompacted := bloatStats.FreePercent > 0 && tableInfo.Stats.PageCount > bloatStats.EffectivePageCount
 
 		if canBeCompacted {
-			p.log.Warnf("Statistics: %d pages (%d pages including toasts and indexes), it is expected that ~%0.3f%% (%d pages) can be compacted with the estimated space saving being %s.",
+			p.log.Infof("Statistics: %d pages (%d pages including toasts and indexes), it is expected that ~%0.3f%% (%d pages) can be compacted with the estimated space saving being %s.",
 				tableInfo.Stats.PageCount,
 				tableInfo.Stats.TotalPageCount,
 				bloatStats.FreePercent,
@@ -317,7 +322,7 @@ func (p *Process) process(ctx context.Context, schema, table string, attepmt int
 			cleanPagesTotalDuration += time.Since(startTime)
 
 			if err != nil {
-				if errRollback := tx.Rollback(ctx); err != nil {
+				if errRollback := tx.Rollback(ctx); errRollback != nil {
 					p.log.Errorf("Rollbacking because of error: %v", err)
 					return false, fmt.Errorf("can't rollback transaction: %v", errRollback)
 				}
@@ -348,9 +353,7 @@ func (p *Process) process(ctx context.Context, schema, table string, attepmt int
 				}
 			}
 
-			spentTime := time.Since(startTime)
-
-			sleepTime := time.Duration(params.DELAY_RATIO * spentTime.Microseconds() * int64(time.Microsecond))
+			sleepTime := sleepTimeCalculate(time.Since(startTime))
 
 			if sleepTime > 0 {
 				time.Sleep(sleepTime)
@@ -535,4 +538,8 @@ func (p *Process) process(ctx context.Context, schema, table string, attepmt int
 
 func (p *Process) Close() {
 	p.Pg.Close(context.Background())
+}
+
+func sleepTimeCalculate(d time.Duration) time.Duration {
+	return time.Duration(float64(d) * params.DELAY_RATIO)
 }

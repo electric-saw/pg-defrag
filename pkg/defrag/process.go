@@ -263,7 +263,7 @@ func (p *Process) process(ctx context.Context, schema, table string, attepmt int
 				isSkipped = true
 			}
 
-			if bloatStats.FreePercent < params.MINIMAL_COMPACT_PERCENT {
+			if bloatStats.FreePercent < params.MINIMAL_COMPACT_PERCENT*100 {
 				p.log.Warnf("Table %s.%s has less than %0.f%% space to compact (actual is %0.3f%%), skipping defragmentation",
 					schema,
 					table,
@@ -484,7 +484,7 @@ func (p *Process) process(ctx context.Context, schema, table string, attepmt int
 		p.log.Infof("Bloat statistics with pgstattuple: duration %s", time.Since(getStatsStart))
 	}
 
-	willBeSkipped := !isLocked && (isLocked || tableInfo.Stats.PageCount < params.MINIMAL_COMPACT_PAGES || bloatStats.FreePercent < params.MINIMAL_COMPACT_PERCENT)
+	willBeSkipped := !isLocked && (isLocked || tableInfo.Stats.PageCount < params.MINIMAL_COMPACT_PAGES || bloatStats.FreePercent < params.MINIMAL_COMPACT_PERCENT*100)
 
 	if !isLocked && (!p.NoReindex && (!isSkipped || attepmt >= params.MAX_RETRY_COUNT || (!isReindexed && !isSkipped && attepmt == 0))) {
 		if ok, err := p.Pg.ReindexTable(ctx, schema, table, p.Force, p.NoReindex); err != nil {

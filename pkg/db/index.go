@@ -96,12 +96,12 @@ func (pg *PgConnection) ReindexTable(ctx context.Context, schema, table string, 
 				}
 
 				if initialIndexStats.PageCount < params.MINIMAL_COMPACT_PAGES {
-					pg.log.Warnf("skipping reindex: %s.%s, too few pages (has %d and the minimum is %d)", schema, index.IndexName, initialIndexStats.PageCount, params.MINIMAL_COMPACT_PAGES)
+					pg.log.Infof("skipping reindex: %s.%s, too few pages (has %d and the minimum is %d)", schema, index.IndexName, initialIndexStats.PageCount, params.MINIMAL_COMPACT_PAGES)
 					continue
 				}
 
-				if indexBloatStats.FreePerctent < params.MINIMAL_COMPACT_PERCENT {
-					pg.log.Warnf("skipping reindex: %s.%s, %.2f%s free space is below required %.2f%s", schema, index.IndexName, indexBloatStats.FreePerctent, "%", params.MINIMAL_COMPACT_PERCENT, "%")
+				if indexBloatStats.FreePerctent < params.MINIMAL_COMPACT_PERCENT*100 {
+					pg.log.Infof("skipping reindex: %s.%s, %.2f%s free space is below required %.2f%s", schema, index.IndexName, indexBloatStats.FreePerctent, "%", params.MINIMAL_COMPACT_PERCENT*100, "%")
 					continue
 				}
 			}

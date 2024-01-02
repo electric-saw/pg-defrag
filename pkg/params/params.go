@@ -21,6 +21,7 @@ var (
 	PAGES_BEFORE_VACUUM_UPPER_DIVISOR   int64                = envOrDefaultInt64("PAGES_BEFORE_VACUUM_UPPER_DIVISOR", 50)
 	PROGRESS_REPORT_PERIOD              time.Duration        = 60 * time.Second
 	DELAY_RATIO                         float64              = envOrDefaultfloat64("DELAY_RATIO", 2)
+	MAX_DELAY                           time.Duration        = time.Second
 
 	MAX_RETRY_COUNT int = 10
 )

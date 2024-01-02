@@ -541,5 +541,10 @@ func (p *Process) Close() {
 }
 
 func sleepTimeCalculate(d time.Duration) time.Duration {
-	return time.Duration(float64(d) * params.DELAY_RATIO)
+	dur := time.Duration(float64(d) * params.DELAY_RATIO)
+	if dur > params.MAX_DELAY {
+		dur = params.MAX_DELAY
+	}
+
+	return dur
 }

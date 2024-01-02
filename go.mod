@@ -7,8 +7,8 @@ toolchain go1.21.5
 require (
 	github.com/dustin/go-humanize v1.0.1
 	github.com/georgysavva/scany/v2 v2.0.0
-	github.com/jackc/pgx/v5 v5.5.0
-	github.com/pterm/pterm v0.12.72
+	github.com/jackc/pgx/v5 v5.5.1
+	github.com/pterm/pterm v0.12.73
 	github.com/sirupsen/logrus v1.9.3
 )
 
@@ -28,7 +28,7 @@ require (
 	github.com/rivo/uniseg v0.4.4 // indirect
 	github.com/stretchr/objx v0.5.1 // indirect
 	github.com/xo/terminfo v0.0.0-20220910002029-abceb7e1c41e // indirect
-	golang.org/x/crypto v0.16.0 // indirect
+	golang.org/x/crypto v0.17.0 // indirect
 	golang.org/x/sync v0.5.0 // indirect
 	golang.org/x/sys v0.15.0 // indirect
 	golang.org/x/term v0.15.0 // indirect

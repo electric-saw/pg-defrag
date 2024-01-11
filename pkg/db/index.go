@@ -132,12 +132,12 @@ func (pg *PgConnection) ReindexTable(ctx context.Context, schema, table string, 
 
 			if !noReindex {
 				if useReindexConcurrently {
-					if err := pg.ReindexIndexConcurrently(ctx, &index, &initialIndexStats); err != nil {
+					if err := pg.ReindexIndexConcurrently(context.Background(), &index, &initialIndexStats); err != nil {
 						pg.log.Errorf("failed on reindex concurrently: %s", err)
 						isReindexed = false
 					}
 				} else {
-					if err := pg.ReindexIndexOldReplace(ctx, &index); err != nil {
+					if err := pg.ReindexIndexOldReplace(context.Background(), &index); err != nil {
 						pg.log.Errorf("failed on reindex old replace: %w", err)
 						isReindexed = false
 					}

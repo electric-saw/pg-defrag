@@ -486,7 +486,7 @@ func (pg *PgConnection) getIndexBloatStats(ctx context.Context, schema, index st
 					'90')::real AS fillfactor,
 				pgsi.*
 			FROM pg_catalog.pg_class
-			CROSS JOIN %s.pgstatindex(
+			CROSS JOIN %q.pgstatindex(
 				quote_ident($1) || '.' || quote_ident($2)) AS pgsi
 			WHERE pg_catalog.pg_class.oid = (quote_ident($1) || '.' || quote_ident($2))::regclass
 		) AS oq`, pgstatstupleSchema)

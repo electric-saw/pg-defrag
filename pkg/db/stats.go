@@ -65,7 +65,7 @@ func (pg *PgConnection) GetBloatStats(ctx context.Context, schema, table string)
         pgst.*
     from pg_catalog.pg_class
     cross join
-        %s.pgstattuple(
+        %q.pgstattuple(
             (quote_ident($1) || '.' || quote_ident($2))) as pgst
     where pg_catalog.pg_class.oid = (quote_ident($1) || '.' || quote_ident($2))::regclass
     ) as sq limit 1;`, pgStatTupleSchema)

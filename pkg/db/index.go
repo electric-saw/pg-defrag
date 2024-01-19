@@ -352,8 +352,8 @@ FROM (
             '.')::integer[] AS version
     FROM pg_catalog.pg_indexes
       WHERE
-       schemaname = quote_ident($1) AND
-       tablename = quote_ident($2)
+       schemaname = $1 AND
+       tablename = $2
 ) AS sq
 LEFT JOIN pg_catalog.pg_constraint ON
     conindid = indexoid AND contype IN ('p', 'u')
@@ -398,7 +398,7 @@ func (pg *PgConnection) IndexExists(ctx context.Context, schema, index string) (
 	SELECT EXISTS (
 		SELECT 1
 		FROM pg_catalog.pg_indexes
-		WHERE schemaname = quote_ident($1) AND indexname = quote_ident($2)
+		WHERE schemaname = $1 AND indexname = $2
 	)
 	`
 	var result bool

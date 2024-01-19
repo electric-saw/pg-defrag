@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/electric-saw/pg-defrag/pkg/params"
 	"github.com/georgysavva/scany/v2/pgxscan"
 )
 
@@ -45,34 +46,23 @@ func (pg *PgConnection) GetBloatStats(ctx context.Context, schema, table string)
 	if err != nil {
 		return nil, fmt.Errorf("Failed to get pg_stat_tuple schema: %v", err)
 	}
-	qry := fmt.Sprintf(`
-	select
-    ceil((size - free_space - dead_tuple_len) * 100 / fillfactor / bs) as effective_page_count,
-            greatest(round(
-                (100 * (1 - (100 - free_percent - dead_tuple_percent) / fillfactor))::numeric, 2
-            ),0) as free_percent,
-            greatest(ceil(size - (size - free_space - dead_tuple_len) * 100 / fillfactor), 0) as free_space
-    from (
-    select
-        current_setting('block_size')::integer as bs,
-        pg_catalog.pg_relation_size(pg_catalog.pg_class.oid) as size,
-        coalesce(
-            (
-                select (
-                    regexp_matches(
-                        reloptions::text, e'.*fillfactor=(\\\\d+).*'))[1]),
-            '100')::real as fillfactor,
-        pgst.*
-    from pg_catalog.pg_class
-    cross join
-        %q.pgstattuple(
-            (quote_ident($1) || '.' || quote_ident($2))) as pgst
-    where pg_catalog.pg_class.oid = (quote_ident($1) || '.' || quote_ident($2))::regclass
-    ) as sq limit 1;`, pgStatTupleSchema)
+
+	qry := fmt.Sprintf(qryTableBloatPgstattuple, pgStatTupleSchema)
 
 	var stats PgBloatStats
 	err = pgxscan.Get(ctx, pg.Conn, &stats, qry, schema, table)
-	return &stats, err
+	if err != nil {
+		return nil, fmt.Errorf("Failed to get bloat stats: %v", err)
+	}
+
+	if params.BLOAT_METRIC_SOURCE == params.BLOAT_METRIC_STATISTICAL {
+		qry = qryTableBloatStatistical
+		err = pgxscan.Get(ctx, pg.Conn, &stats, qry, schema, table)
+		if err != nil {
+			return nil, fmt.Errorf("Failed to get bloat stats: %v", err)
+		}
+	}
+	return &stats, nil
 }
 
 func (s *PgSizeStats) Copy() *PgSizeStats {

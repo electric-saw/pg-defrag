@@ -460,36 +460,13 @@ func (pg *PgConnection) getIndexBloatStats(ctx context.Context, schema, index st
 	if pgstatstupleSchema, err := pg.GetPgStatTupleSchema(ctx); err != nil {
 		return nil, fmt.Errorf("error getting pgstattuple schema: %w", err)
 	} else {
-		qry := fmt.Sprintf(`
-		SELECT
-			CASE
-				WHEN avg_leaf_density = 'NaN' THEN 0
-				ELSE
-					round(
-						(100 * (1 - avg_leaf_density / fillfactor))::numeric, 2
-					)
-				END AS free_percent,
-			CASE
-				WHEN avg_leaf_density = 'NaN' THEN 0
-				ELSE
-					ceil(
-						index_size * (1 - avg_leaf_density / fillfactor)
-					)
-				END AS free_space
-		FROM (
-			SELECT
-				coalesce(
-					(
-						SELECT (
-							regexp_matches(
-								reloptions::text, E'.*fillfactor=(\\\\d+).*'))[1]),
-					'90')::real AS fillfactor,
-				pgsi.*
-			FROM pg_catalog.pg_class
-			CROSS JOIN %q.pgstatindex(
-				quote_ident($1) || '.' || quote_ident($2)) AS pgsi
-			WHERE pg_catalog.pg_class.oid = (quote_ident($1) || '.' || quote_ident($2))::regclass
-		) AS oq`, pgstatstupleSchema)
+		var qry string
+		switch params.BLOAT_METRIC_SOURCE {
+		case params.BLOAT_METRIC_STATISTICAL:
+			qry = qryIndexBloatStatistical
+		default:
+			qry = fmt.Sprintf(qryIndexBloatPgstattuple, pgstatstupleSchema)
+		}
 
 		var result IndexBloatStats
 		err := pgxscan.Get(ctx, pg.Conn, &result, qry, schema, index)

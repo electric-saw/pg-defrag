@@ -8,7 +8,17 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
-type maxPagesPerRoundFunc func(int64) int64
+type (
+	maxPagesPerRoundFunc func(int64) int64
+	BloatMetricType      int
+)
+
+const (
+	BLOAT_METRIC_PGSTATTUPLE BloatMetricType = iota
+	BLOAT_METRIC_STATISTICAL
+
+	BLOAT_METRIC_DEFAULT = BLOAT_METRIC_PGSTATTUPLE
+)
 
 var (
 	MINIMAL_COMPACT_PAGES               int64                = envOrDefaultInt64("MINIMAL_COMPACT_PAGES", 10)
@@ -22,6 +32,7 @@ var (
 	PROGRESS_REPORT_PERIOD              time.Duration        = 60 * time.Second
 	DELAY_RATIO                         float64              = envOrDefaultfloat64("DELAY_RATIO", 2)
 	MAX_DELAY                           time.Duration        = time.Second
+	BLOAT_METRIC_SOURCE                                      = BLOAT_METRIC_DEFAULT
 
 	MAX_RETRY_COUNT int = 10
 )

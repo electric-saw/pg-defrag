@@ -355,6 +355,12 @@ func (p *Process) process(ctx context.Context, schema, table string, attepmt int
 
 			sleepTime := sleepTimeCalculate(time.Since(startTime))
 
+			if params.ROUND_WAIT_FUNC != nil {
+				if err := params.ROUND_WAIT_FUNC(loop, schema, table); err != nil {
+					return false, fmt.Errorf("can't wait round: %v", err)
+				}
+			}
+
 			if sleepTime > 0 {
 				time.Sleep(sleepTime)
 			}

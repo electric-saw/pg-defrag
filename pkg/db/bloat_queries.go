@@ -176,8 +176,9 @@ FROM (
                           string_to_array(textin(int2vectorout(i.indkey)),' ')::int[] AS indkey
                       FROM pg_index i
                       JOIN pg_class ci ON ci.oid=i.indexrelid
-                      WHERE ci.relam=(SELECT oid FROM pg_am WHERE amname = 'btree')
-                        AND ci.relpages > 0
+                      WHERE
+                        -- ci.relam=(SELECT oid FROM pg_am WHERE amname = 'btree') AND
+                        ci.relpages > 0
                         AND ci.relnamespace = ($1)::regnamespace
                         AND ci.relname = $2
                   ) AS idx_data

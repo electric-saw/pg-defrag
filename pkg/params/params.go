@@ -10,7 +10,9 @@ import (
 
 type (
 	maxPagesPerRoundFunc func(int64) int64
-	BloatMetricType      int
+
+	roundWaitFunc   func(round int64, schema, table string) error
+	BloatMetricType int
 )
 
 const (
@@ -35,6 +37,8 @@ var (
 	BLOAT_METRIC_SOURCE                                      = BLOAT_METRIC_DEFAULT
 
 	MAX_RETRY_COUNT int = 10
+
+	ROUND_WAIT_FUNC roundWaitFunc = nil
 )
 
 func envOrDefaultInt64(env string, def int64) int64 {

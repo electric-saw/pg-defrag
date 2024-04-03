@@ -78,7 +78,9 @@ func (pg *PgConnection) ReindexTable(ctx context.Context, schema, table string, 
 			}
 
 			indexBloatStats, err := pg.getIndexBloatStats(context.Background(), schema, index.IndexName)
-			if err != nil {
+			if pgxscan.NotFound(err) {
+				pg.log.Warnf("failed on get index bloat stats: %s", err)
+			} else if err != nil {
 				return false, fmt.Errorf("failed on get index bloat stats: %w", err)
 			}
 
